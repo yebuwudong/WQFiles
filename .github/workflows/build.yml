@@ -27,6 +27,14 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: 检查汉化覆盖率
+        run: |
+          chmod +x scripts/zh_apply.py
+          python3 scripts/zh_apply.py --check || {
+            echo "::error::上游新增了未汉化的界面字符串，请补进 i18n/zh.txt 后重新运行 scripts/zh_apply.py";
+            exit 1;
+          }
+
       - name: Run host regression suite
         run: bash tests/run_all_tests.sh
 

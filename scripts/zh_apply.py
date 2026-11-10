@@ -20,7 +20,7 @@ TARGETS = ["main.m", "WQApps.m", "WQCache.m", "WQSharing.m", "WQPlistEditor.m",
            "WQHexViewer.m", "WQUI.m"]
 LOG_CALLS = ("wq_log(", "NSLog(", "fprintf(", "printf(")
 # 这些不是界面文案：谓词、日期格式、机型营销名。
-IGNORE = ("selected == YES", "yyyy-MM-dd HH.mm.ss", "en_US_POSIX",
+IGNORE = ("selected == YES", "yyyy-MM-dd HH.mm.ss", "en_US_POSIX", "Backups", "AppBackups",
           "Before restore", "<!DOCTYPE plist", "<plist")
 IGNORE_PREFIX = ("iPhone",)
 
@@ -119,7 +119,7 @@ def rewrite(path: Path, table: dict, pending: list) -> int:
             line_start = text.rfind("\n", 0, i) + 1
             prefix = "".join(out)[line_start:]
             in_log = any(call in prefix for call in LOG_CALLS)
-            if logical in table and not in_log:
+            if logical in table and not in_log and logical not in IGNORE:
                 out.append('"' + escape(table[logical]) + '"')
                 changed += 1
             else:

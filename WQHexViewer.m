@@ -32,7 +32,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
             if (!wqh_is_visible(host) || host.presentedViewController) return;
             UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:message
                                                                  preferredStyle:UIAlertControllerStyleAlert];
-            [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
             [host presentViewController:a animated:YES completion:nil];
         };
         if (presented) [presented dismissViewControllerAnimated:YES completion:present];
@@ -95,7 +95,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
             self->_size = ok ? (unsigned long long)st.st_size : 0;
             [self layoutColumns];
             if (wq_permission_hint(path, YES)) self->_readOnly = YES;
-            self->_status = ok ? nil : @"Cannot open this file.";
+            self->_status = ok ? nil : @"无法打开此文件。";
             [self updateBar];
             [self.tableView reloadData];
         });
@@ -146,27 +146,27 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 - (void)updateBar
 {
     NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)_size countStyle:NSByteCountFormatterCountStyleFile];
-    NSString *prompt = _status ?: [NSString stringWithFormat:@"%@ · %llu bytes%@%@", size, _size,
-                                   _edits.count ? [NSString stringWithFormat:@" · %lu changed", (unsigned long)_edits.count] : @"",
-                                   _editState.saving ? @" · Saving…" : @""];
+    NSString *prompt = _status ?: [NSString stringWithFormat:@"%@ · %llu 字节%@%@", size, _size,
+                                   _edits.count ? [NSString stringWithFormat:@" · 已修改 %lu 字节", (unsigned long)_edits.count] : @"",
+                                   _editState.saving ? @" · 正在保存…" : @""];
     self.navigationItem.prompt = prompt;
     NSMutableArray *items = [NSMutableArray array];
     if (!_readOnly) {
-        UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithTitle:@"Save" style:wq_primary_button_style()
+        UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithTitle:@"保存" style:wq_primary_button_style()
                                                                 target:self action:@selector(save)];
         save.enabled = _edits.count > 0 && !_editState.saving;
         [items addObject:save];
     }
     __weak typeof(self) weakSelf = self;
-    UIAction *discard = [UIAction actionWithTitle:@"Discard Changes" image:[UIImage systemImageNamed:@"arrow.uturn.backward"] identifier:nil
+    UIAction *discard = [UIAction actionWithTitle:@"放弃更改" image:[UIImage systemImageNamed:@"arrow.uturn.backward"] identifier:nil
                                       handler:^(UIAction *__unused a) { [weakSelf discard]; }];
     if (_editState.saving) discard.attributes = UIMenuElementAttributesDisabled;
     UIMenu *menu = [UIMenu menuWithChildren:@[
-        [UIAction actionWithTitle:@"Go to Offset…" image:[UIImage systemImageNamed:@"arrow.right.to.line"] identifier:nil
+        [UIAction actionWithTitle:@"跳转到偏移…" image:[UIImage systemImageNamed:@"arrow.right.to.line"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf goToOffset]; }],
-        [UIAction actionWithTitle:@"Find Hex Bytes…" image:[UIImage systemImageNamed:@"magnifyingglass"] identifier:nil
+        [UIAction actionWithTitle:@"查找十六进制字节…" image:[UIImage systemImageNamed:@"magnifyingglass"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf promptFindHex:YES]; }],
-        [UIAction actionWithTitle:@"Find Text…" image:[UIImage systemImageNamed:@"text.magnifyingglass"] identifier:nil
+        [UIAction actionWithTitle:@"查找文本…" image:[UIImage systemImageNamed:@"text.magnifyingglass"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf promptFindHex:NO]; }],
         discard,
     ]];
@@ -205,7 +205,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         dispatch_async(dispatch_get_main_queue(), ^{
             [self->_loading removeObject:page];
             if (!data) {
-                self->_status = wq_permission_hint(path, NO) ? @"Only the owner may read this file." : [NSString stringWithFormat:@"Read failed: %@", error];
+                self->_status = wq_permission_hint(path, NO) ? @"只有所有者可以读取此文件。" : [NSString stringWithFormat:@"读取失败：%@", error];
                 [self updateBar];
                 return;
             }
@@ -277,8 +277,8 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         if (b < 0) return;   // page not loaded yet
         [current appendFormat:i ? @" %02x" : @"%02x", b];
     }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Bytes at 0x%llx", start]
-        message:[NSString stringWithFormat:@"Overwrite these %lu bytes (hex). The file size stays the same.", (unsigned long)count]
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"0x%llx 处的字节", start]
+        message:[NSString stringWithFormat:@"覆盖这 %lu 个字节（十六进制），文件大小保持不变。", (unsigned long)count]
         preferredStyle:UIAlertControllerStyleAlert];
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.text = current;
@@ -286,11 +286,11 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
         f.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Set" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"设定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
         NSData *bytes = WQParseHex(a.textFields.firstObject.text ?: @"", NO);
         if (bytes.length != count) {
-            wqh_alert(self, @"Not changed", [NSString stringWithFormat:@"Enter exactly %lu bytes in hex.", (unsigned long)count]);
+            wqh_alert(self, @"未修改", [NSString stringWithFormat:@"请输入正好 %lu 个字节的十六进制值。", (unsigned long)count]);
             return;
         }
         const uint8_t *nb = bytes.bytes;
@@ -334,7 +334,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 - (BOOL)blockWhileSaving
 {
     if (!_editState.saving) return NO;
-    wqh_alert(self, @"Save in progress", @"Wait for the save to finish before leaving or changing these edits.");
+    wqh_alert(self, @"正在保存", @"请等待保存完成后再离开或修改这些编辑。");
     return YES;
 }
 
@@ -342,19 +342,19 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 {
     if (!_edits.count || [self blockWhileSaving]) return;
     if (!_version) {
-        wqh_alert(self, @"Save unavailable", @"The file version could not be verified. Close and reopen it before saving.");
+        wqh_alert(self, @"无法保存", @"无法校验文件版本，请关闭并重新打开后再保存。");
         return;
     }
     NSDictionary *runs = [self runs];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Save changes?"
-        message:[NSString stringWithFormat:@"%lu bytes in %@ are overwritten in place. The current file is backed up first.",
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"保存更改？"
+        message:[NSString stringWithFormat:@"%lu 个字节（位于 %@）将被就地覆盖，当前文件会先备份。",
                  (unsigned long)_edits.count, _path]
         preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused x) {
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused x) {
         NSDictionary *expectedVersion = [self->_version copy];
         if (!expectedVersion) {
-            wqh_alert(self, @"Save unavailable", @"The file version could not be verified. Close and reopen it before saving.");
+            wqh_alert(self, @"无法保存", @"无法校验文件版本，请关闭并重新打开后再保存。");
             return;
         }
         NSUInteger savedRevision = [self->_editState beginSave];
@@ -368,7 +368,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
                 [self->_editState finishSave:ok revision:savedRevision];
                 if (!ok) {
                     [self updateBar];
-                    wqh_alert(self, @"Save failed", error ?: wq_permission_hint(path, YES) ?: @"Unknown error");
+                    wqh_alert(self, @"保存失败", error ?: wq_permission_hint(path, YES) ?: @"未知错误");
                     return;
                 }
                 self->_version = savedVersion;
@@ -397,10 +397,10 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 {
     if ([self blockWhileSaving]) return;
     if (!_edits.count) { proceed(); return; }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Discard changes?"
-        message:@"Your byte changes have not been saved." preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Keep Editing" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Discard" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused x) {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"放弃更改？"
+        message:@"字节修改尚未保存。" preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"放弃" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused x) {
         [self->_edits removeAllObjects];
         [self->_editState discard];
         proceed();
@@ -428,27 +428,27 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 
 - (void)goToOffset
 {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Go to Offset"
-        message:@"Hex (0x1a2b) or decimal" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"跳转到偏移"
+        message:@"十六进制（0x1a2b）或十进制" preferredStyle:UIAlertControllerStyleAlert];
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.placeholder = @"0x0";
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
         f.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Go" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"前往" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
         NSString *t = [a.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         unsigned long long off = 0;
         if (!WQHexParseOffset(t, &off)) {
-            wqh_alert(self, @"Invalid offset", @"Enter a complete non-negative decimal value or a 0x-prefixed hexadecimal value.");
+            wqh_alert(self, @"偏移无效", @"请输入完整的非负十进制值或以 0x 开头的十六进制值。");
             return;
         }
         if (_size == 0) {
-            wqh_alert(self, @"Offset unavailable", @"The file is empty or its size is still loading.");
+            wqh_alert(self, @"偏移不可用", @"文件为空或大小仍在加载。");
             return;
         }
         if (off >= _size) {
-            wqh_alert(self, @"Offset out of range", [NSString stringWithFormat:@"Enter an offset from 0x0 through 0x%llx.", _size - 1]);
+            wqh_alert(self, @"偏移超出范围", [NSString stringWithFormat:@"请输入 0x0 到 0x%llx 之间的偏移。", _size - 1]);
             return;
         }
         [self scrollToOffset:off];
@@ -458,22 +458,22 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 
 - (void)promptFindHex:(BOOL)hex
 {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:hex ? @"Find Hex Bytes" : @"Find Text"
-        message:@"Searches the saved file forward from the top of the screen." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:hex ? @"查找十六进制字节" : @"查找文本"
+        message:@"从当前屏幕顶部开始，在已保存的文件中向后查找。" preferredStyle:UIAlertControllerStyleAlert];
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.placeholder = hex ? @"de ad be ef" : @"text";
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
         f.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Find" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"查找" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
         NSString *t = a.textFields.firstObject.text ?: @"";
         if (!WQHexSearchInputWithinLimit(t)) {
-            wqh_alert(self, @"Search too large", @"Use at most 1 MiB of UTF-8 search input.");
+            wqh_alert(self, @"搜索内容过大", @"UTF-8 搜索输入请勿超过 1 MiB。");
             return;
         }
         NSData *needle = hex ? WQParseHex(t, NO) : [t dataUsingEncoding:NSUTF8StringEncoding];
-        if (needle.length == 0) { wqh_alert(self, @"Nothing to find", hex ? @"Enter hex bytes, e.g. de ad be ef." : @"Enter some text."); return; }
+        if (needle.length == 0) { wqh_alert(self, @"没有可查找的内容", hex ? @"请输入十六进制字节，例如 de ad be ef。" : @"请输入一些文本。"); return; }
         BOOL sameNeedle = self->_lastSearchNeedle && [self->_lastSearchNeedle isEqualToData:needle];
         NSInteger topRow = NSIntegerMax;
         for (NSIndexPath *indexPath in self.tableView.indexPathsForVisibleRows) {
@@ -492,7 +492,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 - (void)search:(NSData *)needle from:(unsigned long long)from
 {
     NSUInteger generation = ++_searchGeneration;
-    _status = @"Searching…";
+    _status = @"正在搜索…";
     [self updateBar];
     NSString *path = _path;
     unsigned long long size = _size;
@@ -516,7 +516,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
             if (found == ULLONG_MAX) {
                 self->_matchLength = 0;
                 [self.tableView reloadData];
-                wqh_alert(self, @"Not found", error ?: [NSString stringWithFormat:@"No match after offset 0x%llx.", from]);
+                wqh_alert(self, @"未找到", error ?: [NSString stringWithFormat:@"偏移 0x%llx 之后没有匹配项。", from]);
                 return;
             }
             self->_matchOffset = found;

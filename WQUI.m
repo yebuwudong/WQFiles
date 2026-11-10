@@ -273,7 +273,7 @@ void wq_alert(UIViewController *host, NSString *title, NSString *message)
     if (host.presentedViewController && !host.presentedViewController.isBeingDismissed) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [host presentViewController:alert animated:YES completion:nil];
 }
 

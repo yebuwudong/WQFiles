@@ -1,3 +1,5 @@
+> **汉化版（本分支）**：界面已汉化，汉化 IPA 在 [Releases](https://github.com/yebuwudong/WQFiles/releases/tag/zh-latest)，汉化说明见 [README.zh.md](README.zh.md)。以下为上游原文说明。
+
 # Worse Query Files
 
 **WQ Files** is a file browser, app data manager and cache cleaner for iOS 26

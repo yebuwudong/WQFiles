@@ -121,7 +121,7 @@ void wq_share(UIViewController *host, NSString *path, UIView *source)
 {
     if (!host) return;
     if (wq_share_in_flight(host)) {
-        wq_alert(host, @"Share in progress", @"Wait for the current share to finish before starting another.");
+        wq_alert(host, @"正在分享", @"请等待当前分享完成后再开始新的分享。");
         return;
     }
     objc_setAssociatedObject(host, &kWQShareInFlightKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -132,7 +132,7 @@ void wq_share(UIViewController *host, NSString *path, UIView *source)
         NSString *tmp = nil;
         BOOL ok = NO;
         if (!wq_shareable_regular_file(path)) {
-            error = @"Only regular files can be shared.";
+            error = @"只能分享普通文件。";
         } else {
             outDir = wq_unique_export_directory();
             tmp = outDir ? [outDir stringByAppendingPathComponent:path.lastPathComponent] : nil;
@@ -144,7 +144,7 @@ void wq_share(UIViewController *host, NSString *path, UIView *source)
                 wq_remove_export(outDir);
                 wq_clear_in_flight(strongHost);
                 if (wq_share_host_is_active(strongHost)) {
-                    wq_alert(strongHost, @"Cannot share", error ?: @"Could not create a temporary export folder");
+                    wq_alert(strongHost, @"无法分享", error ?: @"无法创建临时导出文件夹");
                 }
                 return;
             }
@@ -165,14 +165,14 @@ void wq_share_folder(UIViewController *host, NSString *dir, NSString *zipName, U
 {
     if (!wq_share_host_is_active(host)) return;
     if (wq_share_in_flight(host)) {
-        wq_alert(host, @"Share in progress", @"Wait for the current share to finish before starting another.");
+        wq_alert(host, @"正在分享", @"请等待当前分享完成后再开始新的分享。");
         return;
     }
     WQSharePreparation *preparation = [WQSharePreparation new];
     preparation.host = host;
-    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"Preparing…"
-        message:@"Compressing the folder" preferredStyle:UIAlertControllerStyleAlert];
-    [hud addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *__unused action) {
+    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"准备中…"
+        message:@"正在压缩文件夹" preferredStyle:UIAlertControllerStyleAlert];
+    [hud addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *__unused action) {
         preparation.cancelled = YES;
         objc_setAssociatedObject(host, &kWQSharePreparationKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [host dismissViewControllerAnimated:YES completion:nil];
@@ -200,8 +200,8 @@ void wq_share_folder(UIViewController *host, NSString *dir, NSString *zipName, U
             }];
         }
         BOOL ok = zip && !preparation.isCancelled && [fm fileExistsAtPath:zip];
-        NSString *why = (coordError ?: copyError).localizedDescription ?: @"Could not create the ZIP";
-        wq_log(@"share zip: %@ -> %@ %@", dir, zip.lastPathComponent, ok ? @"OK" : why);
+        NSString *why = (coordError ?: copyError).localizedDescription ?: @"无法创建 ZIP";
+        wq_log(@"share zip: %@ -> %@ %@", dir, zip.lastPathComponent, ok ? @"好" : why);
         dispatch_async(dispatch_get_main_queue(), ^{
             UIViewController *strongHost = preparation.host;
             BOOL hudPresented = strongHost && strongHost.presentedViewController == hud;
@@ -211,7 +211,7 @@ void wq_share_folder(UIViewController *host, NSString *dir, NSString *zipName, U
                 if (!ok || stale) {
                     wq_remove_export(outDir);
                     if (!stale && wq_share_host_is_active(strongHost)) {
-                        wq_alert(strongHost, @"Cannot share", why);
+                        wq_alert(strongHost, @"无法分享", why);
                     }
                     return;
                 }

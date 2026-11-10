@@ -931,7 +931,7 @@ static NSString *wq_folder_date_text(NSDate *date)
                     if (bid) { item.bundleID = bid; item.label = wq_display_name(bid) ?: bid; (void)wq_app_icon(bid); }
                 }
                 if ([path isEqualToString:wq_backup_root().stringByDeletingLastPathComponent]) {
-                    if ([name isEqualToString:@"备份"]) item.label = @"文件备份";
+                    if ([name isEqualToString:@"Backups"]) item.label = @"文件备份";
                     if ([name isEqualToString:@"AppBackups"]) item.label = @"App 备份";
                 }
             }

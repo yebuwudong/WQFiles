@@ -1,0 +1,41 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/kolbicz/WQFiles.git
+          git fetch --no-tags upstream main
+          UPSTREAM=$(git rev-parse upstream/main)
+          if git merge-base --is-ancestor "$UPSTREAM" HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            # 冲突时保留汉化改动：以汉化分支为准，人工再处理
+            if ! git merge --no-edit "upstream/main"; then
+              echo "::error::upstream merge has conflicts; resolve locally"
+              exit 1
+            fi
+          fi
+
+      - name: Push
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin HEAD:main

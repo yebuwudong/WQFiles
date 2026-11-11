@@ -2141,10 +2141,24 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     });
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (NSString *)systemGroupsFooterText
 {
     if (!_names) return @"加载中…";
     return _listed ? nil : @"此 iOS 版本无法列出该文件夹。下方显示已确认存在的名称，点 + 可尝试其他名称。";
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
+{
+    return wq_table_text_header([self systemGroupsFooterText], tableView.bounds.size.width, NO);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return (NSInteger)_names.count; }
@@ -2426,18 +2440,46 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     return section == 0 ? (NSInteger)_locations.count + (wq_system_areas_reachable() ? 1 : 0) : 6;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)rootHeaderTextForSection:(NSInteger)section
 {
     return section == 0 ? @"容器" : @"工具";
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (NSString *)rootFooterTextForSection:(NSInteger)section
 {
     if (section == 0 && !wq_system_areas_reachable())
         return @"在 iOS 26 上无法访问系统数据和系统群组（worse_query 仅在 iOS 27 上覆盖），而内部守护进程需要扫描每个文件 id：设备使用较多时首次扫描可能接近一小时，之后只检查新文件。";
     return section == 1
         ? @"被覆盖和删除的文件会先复制到「备份」（在「文件」App 中也能看到）。长按某个备份即可还原。"
         : nil;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
+{
+    return wq_table_text_header([self rootHeaderTextForSection:section], tableView.bounds.size.width, YES);
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
+{
+    return wq_table_text_header([self rootFooterTextForSection:section], tableView.bounds.size.width, NO);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForHeaderInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath

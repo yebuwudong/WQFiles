@@ -20,5 +20,8 @@ UIView *wq_device_header(CGFloat width);
 // "iPhone 17 Pro Max (iPhone18,2) · iOS 27.0.1 (24A446)"
 NSString *wq_device_line(void);
 UIImage *_Nullable wq_app_icon(NSString *_Nullable bundleID);
+// 多行的分组标题/说明。中文比英文长，系统自带的 titleForHeaderInSection /
+// titleForFooterInSection 只显示一行并加省略号，所以改用自适应高度的视图。
+UIView *wq_table_text_header(NSString *_Nullable text, CGFloat width, BOOL isHeader);
 
 NS_ASSUME_NONNULL_END

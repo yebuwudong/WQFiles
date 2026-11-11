@@ -318,12 +318,26 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     return (_error || (!_rows.count && _done)) ? 1 : (NSInteger)_rows.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)rowsHeaderText
 {
     if (_error || !_columns) return nil;
     NSString *more = _done ? @"" : @"+";
     if (_limit && _rows.count >= _limit) more = [NSString stringWithFormat:@"（前 %lu 条）", (unsigned long)_limit];
     return [NSString stringWithFormat:@"%lu%@ 行 · %lu 列", (unsigned long)_rows.count, more, (unsigned long)_columns.count];
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
+{
+    return wq_table_text_header([self rowsHeaderText], tableView.bounds.size.width, YES);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForHeaderInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -580,16 +594,44 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     return (_loading || _error || !_tables.count) ? 1 : (NSInteger)_tables.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)sqliteTablesHeaderText
 {
     return _tables.count ? @"表和视图" : nil;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (NSString *)sqliteTablesFooterText
 {
     if (!_snapshot) return nil;
-    NSString *wal = _snapshot.copiedWAL ? @" and its -wal file" : @"";
+    NSString *wal = _snapshot.copiedWAL ? @"（含 -wal 文件）" : @"";
     return [NSString stringWithFormat:@"只读。这是打开时创建的数据库副本%@，App 自己的文件不会被修改。若想获得最新副本，请先关闭该 App。", wal];
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
+{
+    return wq_table_text_header([self sqliteTablesHeaderText], tableView.bounds.size.width, YES);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForHeaderInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
+{
+    return wq_table_text_header([self sqliteTablesFooterText], tableView.bounds.size.width, NO);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath

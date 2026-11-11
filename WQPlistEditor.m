@@ -456,7 +456,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     return self.status ? 0 : (NSInteger)[self.container count];
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (NSString *)plistFooterText
 {
     if (self.status) return self.status;
     if (!self.isRoot) return nil;
@@ -467,6 +467,20 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     }
     return [NSString stringWithFormat:@"%@ 属性列表。点击值可编辑，左滑可删除或重命名，点 + 可添加。", fmt];
 }
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
+{
+    return wq_table_text_header([self plistFooterText], tableView.bounds.size.width, NO);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
+}
+
 
 - (id)keyAt:(NSInteger)row
 {

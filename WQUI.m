@@ -302,6 +302,30 @@ void wq_alert(UIViewController *host, NSString *title, NSString *message)
     [host presentViewController:alert animated:YES completion:nil];
 }
 
+// 分组标题/表尾：按可用宽度自动换行，不再被截断。
+UIView *wq_table_text_header(NSString *text, CGFloat width, BOOL isHeader)
+{
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 0)];
+    if (text.length == 0) return box;
+    UILabel *label = [UILabel new];
+    label.numberOfLines = 0;
+    label.lineBreakMode = NSLineBreakByWordWrapping;
+    label.font = [UIFont preferredFontForTextStyle:isHeader ? UIFontTextStyleFootnote : UIFontTextStyleFootnote];
+    label.adjustsFontForContentSizeCategory = YES;
+    label.textColor = UIColor.secondaryLabelColor;
+    label.text = text;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [box addSubview:label];
+    CGFloat inset = isHeader ? 20 : 16;
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:inset],
+        [label.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-inset],
+        [label.topAnchor constraintEqualToAnchor:box.topAnchor constant:isHeader ? 8 : 6],
+        [label.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:isHeader ? -6 : -10],
+    ]];
+    return box;
+}
+
 NSString *wq_size_text(unsigned long long size)
 {
     if (size == 0) return @"0 KB";

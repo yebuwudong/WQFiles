@@ -766,7 +766,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     return (_busy && !_apps.count) ? 1 : (NSInteger)self.visibleApps.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)appsHeaderText
 {
     if (_status) return _status;
     unsigned long long total = 0;
@@ -776,9 +776,33 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     return [NSString stringWithFormat:@"%lu 个 App · App 数据 %@", (unsigned long)_apps.count, wq_size_text(total)];
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
 {
-    return @"点击某个 App 可备份、还原或清除其 Documents 和 Library。请先关闭该 App（在 App 切换器中上滑关闭）；App 运行期间操作不保证快照一致性。备份保存在 WQFiles/AppBackups，在「文件」App 中也能看到。tmp 只会在请求时清除，不会被备份或还原。";
+    return wq_table_text_header([self appsHeaderText], tableView.bounds.size.width, YES);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    UIView *view = [self tableView:tableView viewForHeaderInSection:section];
+    CGSize size = [view systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+                     withHorizontalFittingPriority:UILayoutPriorityRequired
+                           verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
+{
+    return wq_table_text_header(@"点击某个 App 可备份、还原或清除其 Documents 和 Library。请先关闭该 App（在 App 切换器中上滑关闭）；App 运行期间操作不保证快照一致性。备份保存在 WQFiles/AppBackups，在「文件」App 中也能看到。tmp 只会在请求时清除，不会被备份或还原。",
+                                tableView.bounds.size.width, NO);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
+{
+    UIView *view = [self tableView:tableView viewForFooterInSection:section];
+    CGSize size = [view systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+                     withHorizontalFittingPriority:UILayoutPriorityRequired
+                           verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath

@@ -684,7 +684,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     return section == 0 ? 1 : (NSInteger)self.visibleItems.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)cacheHeaderTextForSection:(NSInteger)section
 {
     if (section == 0 || !_items.count) return nil;
     NSUInteger shown = self.visibleItems.count;
@@ -695,12 +695,40 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                          : [NSString stringWithFormat:@"%lu 个 App 与扩展", (unsigned long)appCount];
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (NSString *)cacheFooterTextForSection:(NSInteger)section
 {
     if (section == 0 || !_items.count) return nil;
     NSArray<WQCacheItem *> *selected = [_items filteredArrayUsingPredicate:
         [NSPredicate predicateWithFormat:@"selected == YES"]];
     return [WQCacheFooterScope(selected) stringByAppendingString:@" 请先关闭正在运行的 App。"];
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
+{
+    return wq_table_text_header([self cacheHeaderTextForSection:section], tableView.bounds.size.width, YES);
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
+{
+    return wq_table_text_header([self cacheFooterTextForSection:section], tableView.bounds.size.width, NO);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForHeaderInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
+{
+    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
+        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+        withHorizontalFittingPriority:UILayoutPriorityRequired
+        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath

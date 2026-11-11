@@ -666,5 +666,29 @@ Cannot safely open distinct source and destination folders	无法安全地打开
 Cannot read the source folder	无法读取源文件夹
 A copy root changed during copying	复制期间某个复制根目录发生了改变
 %@; staging/recovery contents retained at %@	%@；暂存/恢复内容已保留在 %@
-
 This file belongs to %@ (mode %o) and only its owner may %@ it. WQ Files reaches the folder, but runs as mobile (uid %d), so no app can %@ this file.	此文件属于 %@（权限 %o），只有其所有者可以执行「%@」。WQ 文件能访问该文件夹，但它以 mobile（uid %d）身份运行，所以任何 App 都无法执行「%@」。
+Backups	备份
+Size	大小
+Compress	压缩
+Compressing	正在压缩
+Extract	解压
+Extracting	正在解压
+Importing	正在导入
+Move	移动
+Move…	移动…
+Hide	隐藏
+Show	显示
+Archive	压缩包
+%lu%@ rows · %lu columns	%lu%@ 行 · %lu 列
+Result	结果
+Query	查询
+Run	执行
+Copy	拷贝
+Delete “%@”?	删除「%@」？
+New	新建
+Extract Here	解压到此
+Compress Here	压缩到此
+Keep WQ Files open. Switching to another app or locking the screen pauses the scan.	扫描期间请保持 WQ 文件在前台打开。切换到其他 App 或锁屏会暂停扫描。
+This is only slow the first time: later scans only check new files.\n\n	只有第一次较慢：之后的扫描只检查新增文件。\n\n
+To list %@, WQ Files has to check every file on this device once: %@ files, %@.\n\nThis is only needed the first time; later scans only check new files and take seconds.\n\nKeep WQ Files open while it scans.	为了列出 %@，WQ 文件需要对这台设备上的每个文件检查一次：共 %@ 个文件，%@。\n\n只有第一次需要这样做；之后的扫描只检查新增文件，只需几秒。\n\n扫描期间请保持 WQ 文件在前台打开。
+Cancelled	已取消

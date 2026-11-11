@@ -742,7 +742,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         WQSortKey current = wq_sort_key();
         BOOL ascending = wq_sort_ascending();
         NSMutableArray *sortActions = [NSMutableArray new];
-        NSArray *titles = @[@"名称", @"修改日期", @"创建日期", @"Size"];
+        NSArray *titles = @[@"名称", @"修改日期", @"创建日期", @"大小"];
         for (NSInteger key = WQSortName; key <= WQSortSize; key++) {
             UIAction *action = [UIAction actionWithTitle:titles[(NSUInteger)key] image:nil identifier:nil handler:^(UIAction *__unused a) {
                 wq_choose_sort((WQSortKey)key);
@@ -1063,9 +1063,9 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
     if (_selectingFiles) {
         BOOL any = _selectedFiles.count > 0;
-        UIBarButtonItem *move = [[UIBarButtonItem alloc] initWithTitle:@"Move" style:UIBarButtonItemStylePlain
+        UIBarButtonItem *move = [[UIBarButtonItem alloc] initWithTitle:@"移动" style:UIBarButtonItemStylePlain
                                                                 target:self action:@selector(moveSelectedFiles)];
-        UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:@"Compress" style:UIBarButtonItemStylePlain
+        UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:@"压缩" style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(compressSelectedFiles)];
         UIBarButtonItem *del = [[UIBarButtonItem alloc] initWithTitle:@"删除" style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(deleteSelectedFiles)];
@@ -1162,7 +1162,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 - (void)startMove:(NSArray<NSString *> *)paths
 {
     wq_set_move_paths(paths);
-    wq_alert(self, paths.count == 1 ? @"Move" : [NSString stringWithFormat:@"移动 %lu 个项目", (unsigned long)paths.count],
+    wq_alert(self, paths.count == 1 ? @"移动" : [NSString stringWithFormat:@"移动 %lu 个项目", (unsigned long)paths.count],
              @"打开要移动到的目标文件夹，然后点击底部的「移动到此」。任何 App 的文件夹都可以。");
 }
 
@@ -1199,7 +1199,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 {
     NSArray<NSString *> *paths = [self selectedFilePaths];
     if (!paths.count) return;
-    NSString *title = paths.count == 1 ? [NSString stringWithFormat:@"Delete “%@”?", paths.firstObject.lastPathComponent]
+    NSString *title = paths.count == 1 ? [NSString stringWithFormat:@"删除「%@」？", paths.firstObject.lastPathComponent]
                                        : [NSString stringWithFormat:@"删除 %lu 个项目？", (unsigned long)paths.count];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
         message:@"文件会先复制到「备份」，文件夹只有在为空时才能删除。"
@@ -1288,7 +1288,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *base = paths.count == 1 ? paths.firstObject.lastPathComponent : @"Archive";
     NSString *zipName = [self unusedName:base extension:@"zip"];
     NSString *dest = [_path stringByAppendingPathComponent:zipName];
-    [self runArchiveJob:@"Compressing" failure:@"无法压缩"
+    [self runArchiveJob:@"正在压缩" failure:@"无法压缩"
                    work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note) {
         NSString *work = wq_temp_work_dir(@"wq-zip");
         if (!work) { *error = @"无法创建临时文件夹"; return NO; }
@@ -1311,7 +1311,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *base = zipPath.lastPathComponent.stringByDeletingPathExtension;
     NSString *folder = [self unusedName:base.length ? base : @"Archive" extension:nil];
     NSString *dest = [_path stringByAppendingPathComponent:folder];
-    [self runArchiveJob:@"Extracting" failure:@"无法解压"
+    [self runArchiveJob:@"正在解压" failure:@"无法解压"
                    work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note) {
         NSString *work = wq_temp_work_dir(@"wq-unzip");
         if (!work) { *error = @"无法创建临时文件夹"; return NO; }
@@ -1793,18 +1793,18 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         if ([strongSelf canEditHere]) {
             if (!current.isDir && current.isRegular &&
                 [current.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {
-                [actions addObject:[UIAction actionWithTitle:@"Extract" image:[UIImage systemImageNamed:@"archivebox"]
+                [actions addObject:[UIAction actionWithTitle:@"解压" image:[UIImage systemImageNamed:@"archivebox"]
                                                   identifier:nil handler:^(UIAction *__unused a) {
                     WQItem *latest = currentItem();
                     if (latest) [weakSelf extractZip:latest.path];
                 }]];
             }
-            [actions addObject:[UIAction actionWithTitle:@"Compress" image:[UIImage systemImageNamed:@"doc.zipper"]
+            [actions addObject:[UIAction actionWithTitle:@"压缩" image:[UIImage systemImageNamed:@"doc.zipper"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 if (latest) [weakSelf compressPaths:@[latest.path]];
             }]];
-            [actions addObject:[UIAction actionWithTitle:@"Move…" image:[UIImage systemImageNamed:@"folder"]
+            [actions addObject:[UIAction actionWithTitle:@"移动…" image:[UIImage systemImageNamed:@"folder"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 if (latest) [weakSelf startMove:@[latest.path]];
@@ -1989,7 +1989,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
     // a question per file. The picker's local copies are removed afterwards.
     NSString *dir = _path;
     NSArray<NSString *> *sources = [urls valueForKey:@"path"];
-    [self runBusy:@"Importing" failure:@"导入失败" work:^BOOL(NSString **error, NSString **note) {
+    [self runBusy:@"正在导入" failure:@"导入失败" work:^BOOL(NSString **error, NSString **note) {
         NSMutableSet<NSString *> *claimed = [NSMutableSet new];
         NSUInteger done = 0, renamed = 0;
         NSString *first = nil;
@@ -2016,7 +2016,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
 - (void)importFolders:(NSArray<NSURL *> *)urls
 {
     NSString *dir = _path;
-    [self runBusy:@"Importing" failure:@"导入失败" work:^BOOL(NSString **error, NSString **note) {
+    [self runBusy:@"正在导入" failure:@"导入失败" work:^BOOL(NSString **error, NSString **note) {
         NSMutableSet<NSString *> *claimed = [NSMutableSet new];
         NSMutableArray<NSString *> *renamed = [NSMutableArray new];
         for (NSURL *url in urls) {
@@ -2456,7 +2456,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
         }
     } else {
         NSArray *tools = @[@[@"App 列表", @"square.grid.3x3"], @[@"缓存清理", @"trash"], @[@"前往路径…", @"arrow.right.circle"],
-                           @[@"App 备份", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"日志", @"doc.plaintext"]];
+                           @[@"App 备份", @"clock.arrow.circlepath"], @[@"备份", @"clock.arrow.circlepath"], @[@"日志", @"doc.plaintext"]];
         c.text = tools[(NSUInteger)indexPath.row][0];
         c.image = [UIImage systemImageNamed:tools[(NSUInteger)indexPath.row][1]];
     }
@@ -2488,7 +2488,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
         next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:@"App 备份"];
     } else if (indexPath.row == 4) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
-        next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"Backups"];
+        next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"备份"];
     } else {
         next = [WQLogViewController new];
     }
@@ -2618,7 +2618,7 @@ static NSString *wq_count_text(int64_t n)
     _status.textAlignment = NSTextAlignmentCenter;
     _status.text = @"正在开始…";
     UIButton *hide = [UIButton buttonWithConfiguration:UIButtonConfiguration.borderedButtonConfiguration primaryAction:
-        [UIAction actionWithTitle:@"Hide" image:nil identifier:nil handler:^(UIAction *__unused a) {
+        [UIAction actionWithTitle:@"隐藏" image:nil identifier:nil handler:^(UIAction *__unused a) {
             [self dismissViewControllerAnimated:YES completion:nil];
         }]];
     UIButtonConfiguration *stopConfig = UIButtonConfiguration.borderedButtonConfiguration;

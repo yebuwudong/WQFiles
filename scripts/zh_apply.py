@@ -20,8 +20,17 @@ TARGETS = ["main.m", "WQApps.m", "WQCache.m", "WQSharing.m", "WQPlistEditor.m",
            "WQHexViewer.m", "WQUI.m", "WQSQLiteViewer.m", "WQArchive.m", "WQAccess.m"]
 # 会显示给用户的错误文本一并汉化；被测试断言的文案已同步改成译文。
 LOG_CALLS = ("wq_log(", "NSLog(", "fprintf(", "printf(")
+# 这些上下文里的字面量是磁盘目录名/比较基准，翻译会让逻辑失效。
+COMPARE_PATTERN = re.compile(
+    r"(isEqualToString|hasPrefix|hasSuffix|isEqual|caseInsensitiveCompare|compare"
+    r"|stringByAppendingPathComponent|stringByAppendingString|lastPathComponent|pathExtension)\s*:\s*@?$")
 # 这些不是界面文案：谓词、日期格式、机型营销名。
-IGNORE = ("selected == YES", "yyyy-MM-dd HH.mm.ss", "en_US_POSIX", "Backups", "AppBackups",
+IGNORE = ("selected == YES", "yyyy-MM-dd HH.mm.ss", "en_US_POSIX", "android",
+          "Archive",  # 默认压缩包文件名，会写进文件系统
+          "New",      # 暂存目录名，用作 renameatx_np 的路径参数
+          "Cancelled",  # 被测试断言的中止标记
+          "rollback failed: ",  # 以 stringByAppendingString 拼接的片段，替换后不会回退
+          "A–Z", "Z–A", "SQL", "android",  # 与译文相同，无需替换
           "Before restore", "<!DOCTYPE plist", "<plist")
 IGNORE_PREFIX = ("iPhone",)
 # 这些是日志/诊断文字（部分经 NSLog 之外的方式输出），保留英文。
@@ -151,6 +160,11 @@ def rewrite(path: Path, table: dict, pending: list) -> int:
             line_start = text.rfind("\n", 0, i) + 1
             prefix = "".join(out)[line_start:]
             in_log = any(call in prefix for call in LOG_CALLS) or "*summary" in prefix
+            # 只检查紧邻的调用上下文（"..." 之前的 60 个字符）
+            near = "".join(out)[-60:]
+            if COMPARE_PATTERN.search(near) or "stringByAppendingPathComponent:@" in near \
+                    or "stringByAppendingString:@" in near:
+                in_log = True
             if logical in table and not in_log and logical not in IGNORE:
                 out.append('"' + escape(table[logical]) + '"')
                 changed += 1

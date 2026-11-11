@@ -689,7 +689,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     __weak typeof(self) weakSelf = self;
     UIDeferredMenuElement *items = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
         BOOL byName = [NSUserDefaults.standardUserDefaults boolForKey:kWQAppsSortByNamePref];
-        UIAction *size = [UIAction actionWithTitle:@"Size" image:nil identifier:nil handler:^(UIAction *__unused a) {
+        UIAction *size = [UIAction actionWithTitle:@"大小" image:nil identifier:nil handler:^(UIAction *__unused a) {
             [NSUserDefaults.standardUserDefaults setBool:NO forKey:kWQAppsSortByNamePref];
             [weakSelf resortApps];
         }];
@@ -713,7 +713,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
             f.state = i == current ? UIMenuElementStateOn : UIMenuElementStateOff;
             [filters addObject:f];
         }
-        UIMenu *show = [UIMenu menuWithTitle:@"Show" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:filters];
+        UIMenu *show = [UIMenu menuWithTitle:@"显示" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:filters];
         completion(@[sort, show]);
     }];
     return [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"]

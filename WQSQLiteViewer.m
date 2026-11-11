@@ -219,7 +219,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     NSString *value = _values[(NSUInteger)indexPath.section];
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil
         actionProvider:^UIMenu *(NSArray<UIMenuElement *> *__unused suggested) {
-        return [UIMenu menuWithChildren:@[[UIAction actionWithTitle:@"Copy" image:[UIImage systemImageNamed:@"doc.on.doc"]
+        return [UIMenu menuWithChildren:@[[UIAction actionWithTitle:@"拷贝" image:[UIImage systemImageNamed:@"doc.on.doc"]
                                                           identifier:nil handler:^(UIAction *__unused a) {
             UIPasteboard.generalPasteboard.string = value;
         }]]];
@@ -323,7 +323,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     if (_error || !_columns) return nil;
     NSString *more = _done ? @"" : @"+";
     if (_limit && _rows.count >= _limit) more = [NSString stringWithFormat:@"（前 %lu 条）", (unsigned long)_limit];
-    return [NSString stringWithFormat:@"%lu%@ rows · %lu columns", (unsigned long)_rows.count, more, (unsigned long)_columns.count];
+    return [NSString stringWithFormat:@"%lu%@ 行 · %lu 列", (unsigned long)_rows.count, more, (unsigned long)_columns.count];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -449,7 +449,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         [_textView.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
         [_textView.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
     ]];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Run" style:UIBarButtonItemStyleProminent
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"执行" style:UIBarButtonItemStyleProminent
                                                                              target:self action:@selector(run)];
     [_textView becomeFirstResponder];
 }
@@ -476,7 +476,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         sqlite3_finalize(stmt);
     });
     if (error) { wq_alert(self, @"无法执行", error); return; }
-    WQSQLiteRowsViewController *rows = [[WQSQLiteRowsViewController alloc] initWithSnapshot:snapshot sql:sql title:@"Result"
+    WQSQLiteRowsViewController *rows = [[WQSQLiteRowsViewController alloc] initWithSnapshot:snapshot sql:sql title:@"结果"
                                                                                  exportName:@"query" limit:kWQSQLiteQueryLimit];
     [self.navigationController pushViewController:rows animated:YES];
 }

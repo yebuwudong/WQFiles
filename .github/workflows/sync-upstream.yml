@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   sync:
@@ -16,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 合并上游并重跑汉化
+      - name: 合并上游
         id: sync
         run: |
           set -euo pipefail
@@ -32,87 +33,39 @@ jobs:
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$(git show "$UPSTREAM:Info.plist" > /tmp/u.plist && \
+            python3 -c 'import plistlib;print(plistlib.load(open("/tmp/u.plist","rb"))["CFBundleShortVersionString"])')" >> "$GITHUB_OUTPUT"
 
-          UPSTREAM_VERSION=$(git show "$UPSTREAM:Info.plist" > /tmp/upstream-Info.plist
-            python3 -c 'import plistlib;print(plistlib.load(open("/tmp/upstream-Info.plist","rb"))["CFBundleShortVersionString"])')
-          echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
-
-          # 汉化改动必然和上游的英文原文冲突，所以冲突一律以上游为准，
-          # 再重跑一遍汉化脚本把译文套回去。
-          if ! git merge --no-edit "upstream/main"; then
-            echo "::warning::与上游冲突，冲突文件以上游为准，随后重跑汉化。"
+          # 本分支只在几处布局上做了改动，冲突时以上游为准，随后重新应用这些改动。
+          if ! git merge --no-edit upstream/main; then
+            echo "::warning::与上游冲突，冲突文件以上游为准。"
             git diff --name-only --diff-filter=U | while read -r path; do
               git checkout --theirs -- "$path" 2>/dev/null || true
               git add -- "$path"
             done
           fi
 
-          # 上游代码是权威来源：把不是汉化产物的文件保持上游版本
-          git checkout "$UPSTREAM" -- Info.plist entitlements.plist build.sh source.json \
-            README.md RELEASE_NOTES_*.md icons tests scripts/update_source.py 2>/dev/null || true
-
-          python3 - <<'PY'
-          import plistlib
-          path = "Info.plist"
-          with open(path, "rb") as handle:
-              info = plistlib.load(handle)
-          info["CFBundleDisplayName"] = "WQ 文件"
-          with open(path, "wb") as handle:
-              plistlib.dump(info, handle)
-          PY
-
-          python3 scripts/zh_apply.py
-
-          if ! python3 scripts/zh_apply.py --check; then
-            echo "::warning::上游新增了未汉化的界面字符串；IPA 仍会构建，但覆盖率检查会失败。"
-          fi
-
-          # 上游测试里断言的是英文原文，需要同步成译文
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          table = {}
-          for line in Path("i18n/zh.txt").read_text(encoding="utf-8").splitlines():
-              if "\t" in line:
-                  key, value = line.split("\t", 1)
-                  table[key] = value
-
-          test = Path("tests/browser_ui_regressions.py")
-          source = test.read_text(encoding="utf-8")
-          patched = re.sub(r'@\\"((?:[^"\\\\]|\\\\.)*)\\"',
-                           lambda m: '@\\"' + table.get(m.group(1), m.group(1)) + '\\"', source)
-          for english, needle in {
-              "Only regular files can be viewed.": "只能查看普通文件。",
-              "Only regular files can be shared.": "只能分享普通文件。",
-              "Share in progress": "正在分享",
-              "Close running apps first.": "请先关闭正在运行的 App。",
-          }.items():
-              patched = patched.replace(f'"{english}"', f'"{needle}"')
-          if patched != source:
-              test.write_text(patched, encoding="utf-8")
-
-          # Backups 这类磁盘目录名必须保持英文（脚本已忽略，这里再兜底一次）
-          main = Path("main.m")
-          text = main.read_text(encoding="utf-8")
-          text = text.replace('isEqualToString:@"备份"', 'isEqualToString:@"Backups"')
-          main.write_text(text, encoding="utf-8")
-          PY
+          # 上游是权威来源：非本分支改动的文件全部取上游版本。
+          git checkout "$UPSTREAM" -- Info.plist build.sh entitlements.plist source.json \
+            README.md README.zh.md RELEASE_NOTES_*.md i18n scripts/zh_apply.py \
+            en.lproj zh-Hans.lproj WQLocalization.h WQLocalization.m 2>/dev/null || true
+          git rm -r --cached --ignore-unmatch i18n scripts/zh_apply.py >/dev/null 2>&1 || true
+          rm -rf i18n scripts/zh_apply.py
 
           git add -A
           if git diff --cached --quiet; then
             echo "合并后无变化。"
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            git commit -m "sync: 同步上游 ${UPSTREAM_VERSION} 并重跑汉化"
+            git commit -m "sync: 同步上游 ${UPSTREAM_VERSION:-最新} 并保留多行分组标题改动"
           fi
 
       - name: 推送
         if: steps.sync.outputs.changed == 'true'
         run: git push origin HEAD:main
 
-      - name: 触发汉化版构建
+      - name: 触发构建
         if: steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run build.yml --ref main
+        run: gh workflow run build.yml --ref main --repo "${{ github.repository }}"

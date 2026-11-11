@@ -91,8 +91,8 @@ static NSString *WQCacheConfirmationScope(NSArray<WQCacheItem *> *items)
                 : @"Delete Library/Caches and tmp for %lu apps",
                 (unsigned long)appCount);
     }
-    if (hasCrashLogs) return WQLocalized(@"删除崩溃日志");
-    return WQLocalized(@"删除所选的缓存目标");
+    if (hasCrashLogs) return WQLocalized(@"Delete Crash Logs");
+    return WQLocalized(@"Delete the selected cache targets");
 }
 
 static NSString *WQCacheFooterScope(NSArray<WQCacheItem *> *items)
@@ -105,8 +105,8 @@ static NSString *WQCacheFooterScope(NSArray<WQCacheItem *> *items)
     if (hasApps) {
         return WQLocalized(@"Clears each selected app's Library/Caches and tmp. Apps rebuild their caches as you use them; some keep offline content (music, maps, downloads) there and will download it again. No backup is kept.");
     }
-    if (hasCrashLogs) return WQLocalized(@"删除所选的崩溃日志，无法撤销，也不会保留备份。");
-    return WQLocalized(@"选择 App 缓存或崩溃日志以查看删除范围。不会保留备份。");
+    if (hasCrashLogs) return WQLocalized(@"Deletes selected Crash Logs. This cannot be undone. No backup is kept.");
+    return WQLocalized(@"Select app caches or Crash Logs to see the deletion scope. No backup is kept.");
 }
 
 typedef NS_ENUM(NSInteger, WQCacheMeasurementState) {
@@ -189,13 +189,13 @@ static BOOL WQCacheRecordIdentityMatches(WQCacheTargetRecord *record, NSString *
     WQCachePathState state = WQCacheInspectPath(record.path, &st);
     if (!record.existed) {
         if (state == WQCachePathMissing) return YES;
-        if (reason) *reason = [NSString stringWithFormat:@"%@ 是在扫描后出现的", record.path];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ appeared after the scan", record.path];
         return NO;
     }
     if (state != WQCachePathExisting || !record.identityKnown ||
         st.st_dev != record.device || st.st_ino != record.inode ||
         (st.st_mode & S_IFMT) != record.mode) {
-        if (reason) *reason = [NSString stringWithFormat:@"%@ 在扫描后发生了改变", record.path];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ changed after the scan", record.path];
         return NO;
     }
     return YES;
@@ -212,12 +212,12 @@ static BOOL WQCacheCrashPathIsSafe(NSString *path)
 static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 {
     if (item.limited) {
-        if (reason) *reason = WQLocalized(@"扫描时访问受限");
+        if (reason) *reason = WQLocalized(@"the scan had limited access");
         return NO;
     }
     if (item.crashLogs) {
         if (item.targetRecords.count != 1 || !WQCacheCrashPathIsSafe(item.targets.firstObject)) {
-            if (reason) *reason = WQLocalized(@"崩溃日志目标不是预期的规范目录");
+            if (reason) *reason = WQLocalized(@"the crash-log target is not the expected canonical directory");
             return NO;
         }
         return WQCacheRecordIdentityMatches(item.targetRecords.firstObject, reason);
@@ -225,28 +225,28 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     if (item.targetRecords.count != 2 || item.targets.count != 2 ||
         ![item.targets[0] isEqualToString:item.targetRecords[0].path] ||
         ![item.targets[1] isEqualToString:item.targetRecords[1].path]) {
-        if (reason) *reason = WQLocalized(@"已扫描的缓存目标不完整");
+        if (reason) *reason = WQLocalized(@"the scanned cache targets are incomplete");
         return NO;
     }
     if (!item.containerIdentityKnown || !WQCacheSafetyHasNoSymlinkAncestry(item.containerPath, NO)) {
-        if (reason) *reason = WQLocalized(@"App 容器身份或其上级路径不可用");
+        if (reason) *reason = WQLocalized(@"the app container identity or ancestry is unavailable");
         return NO;
     }
     struct stat container = {0};
     if (WQCacheInspectPath(item.containerPath, &container) != WQCachePathExisting ||
         !S_ISDIR(container.st_mode) || container.st_dev != item.containerDevice ||
         container.st_ino != item.containerInode || (container.st_mode & S_IFMT) != item.containerMode) {
-        if (reason) *reason = [NSString stringWithFormat:@"%@ 在扫描后发生了改变", item.name];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ changed after the scan", item.name];
         return NO;
     }
     NSString *label = wq_container_label(item.containerPath);
     if (!item.bundleID.length || ![label isEqualToString:item.bundleID]) {
-        if (reason) *reason = [NSString stringWithFormat:@"%@ 已不再具有扫描时的容器身份", item.name];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ no longer has the scanned container identity", item.name];
         return NO;
     }
     for (WQCacheTargetRecord *record in item.targetRecords) {
         if (!WQCacheSafetyTargetMatchesContainer(record.path, item.containerPath, record.relativePath)) {
-            if (reason) *reason = [NSString stringWithFormat:@"%@ 的上级路径不安全", record.path];
+            if (reason) *reason = [NSString stringWithFormat:@"%@ has unsafe path ancestry", record.path];
             return NO;
         }
         if (!WQCacheRecordIdentityMatches(record, reason)) return NO;
@@ -384,12 +384,12 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = WQLocalizedNullable(@"缓存清理");
+    self.title = WQLocalizedNullable(@"Cache Cleaner");
     self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width);
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
     search.obscuresBackgroundDuringPresentation = NO;
-    search.searchBar.placeholder = WQLocalizedNullable(@"搜索 App");
+    search.searchBar.placeholder = WQLocalizedNullable(@"Search apps");
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
@@ -457,30 +457,30 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         return;
     }
     if (_cleaning) {
-        UIBarButtonItem *stop = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"停止") style:UIBarButtonItemStylePlain
+        UIBarButtonItem *stop = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Stop") style:UIBarButtonItemStylePlain
                                                                  target:self action:@selector(stopClean)];
         self.navigationItem.rightBarButtonItems = @[stop];
         return;
     }
     NSUInteger n = 0;
     for (WQCacheItem *it in _items) if (it.selected) n++;
-    UIBarButtonItem *clean = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"清理") style:wq_primary_button_style()
+    UIBarButtonItem *clean = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Clean") style:wq_primary_button_style()
                                                              target:self action:@selector(confirmClean)];
     clean.enabled = n > 0 && !_cleanRequiresRescan;
     NSArray *visible = self.visibleItems;
     BOOL allVisible = visible.count > 0;
     for (WQCacheItem *it in visible) if (it.limited || !it.selected) { allVisible = NO; break; }
     __weak typeof(self) weakSelf = self;
-    UIAction *__unused all = [UIAction actionWithTitle:WQLocalizedNullable(@"全选") image:[UIImage systemImageNamed:@"checkmark.circle"]
+    UIAction *__unused all = [UIAction actionWithTitle:WQLocalizedNullable(@"Select All") image:[UIImage systemImageNamed:@"checkmark.circle"]
                                    identifier:nil handler:^(UIAction *__unused a) { [weakSelf selectWhere:^BOOL(WQCacheItem *__unused it) { return YES; }]; }];
-    UIAction *none = [UIAction actionWithTitle:WQLocalizedNullable(@"全不选") image:[UIImage systemImageNamed:@"circle"]
+    UIAction *none = [UIAction actionWithTitle:WQLocalizedNullable(@"Select None") image:[UIImage systemImageNamed:@"circle"]
                                     identifier:nil handler:^(UIAction *__unused a) { [weakSelf selectWhere:^BOOL(WQCacheItem *__unused it) { return NO; }]; }];
-    UIAction *large = [UIAction actionWithTitle:WQLocalizedNullable(@"选择大缓存（50 MB 以上）") image:[UIImage systemImageNamed:@"arrow.up.circle"]
+    UIAction *large = [UIAction actionWithTitle:WQLocalizedNullable(@"Select Large Caches (50 MB+)") image:[UIImage systemImageNamed:@"arrow.up.circle"]
                                      identifier:nil handler:^(UIAction *__unused a) {
         [weakSelf selectWhere:^BOOL(WQCacheItem *__unused it) { return it.bytes >= 50ull * 1000 * 1000; }];
     }];
     all.state = allVisible ? UIMenuElementStateOn : UIMenuElementStateOff;
-    UIBarButtonItem *select = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"选择")
+    UIBarButtonItem *select = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Select")
                                                                 menu:[UIMenu menuWithChildren:@[all, none, large]]];
     select.enabled = visible.count > 0;
     self.navigationItem.rightBarButtonItems = @[clean, select];
@@ -506,7 +506,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     _cleanRequiresRescan = NO;
     _result = nil;
     [self updateButtons];
-    [self setStatus:WQLocalizedNullable(@"正在查找 App…")];
+    [self setStatus:WQLocalizedNullable(@"Finding apps…")];
     dispatch_async(wq_io(), ^{
         NSMutableArray<WQCacheItem *> *items = [NSMutableArray new];
         NSMutableArray<NSString *> *emptyRoots = [NSMutableArray new];
@@ -523,7 +523,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             NSArray *containers = wq_enumerate(root, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused f) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                    [self setStatus:WQLocalizedFormat(@"正在查找 %@… %lld%%", kind, (long long)(done * 100 / total))];
+                    [self setStatus:WQLocalizedFormat(@"Finding %@… %lld%%", kind, (long long)(done * 100 / total))];
                 });
             });
             if (!containers) {
@@ -536,7 +536,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             if (!cancellation.isCancelled && !wq_display_names_loaded()) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                [self setStatus:WQLocalizedNullable(@"正在读取 App 名称…")];
+                [self setStatus:WQLocalizedNullable(@"Reading app names…")];
             });
             wq_load_display_names();
         }
@@ -548,7 +548,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                 if (idx % 10 == 0 || idx == containers.count) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                        [self setStatus:WQLocalizedFormat(@"正在统计 %@ %lu / %lu…", kind,
+                        [self setStatus:WQLocalizedFormat(@"Measuring %@ %lu of %lu…", kind,
                                          (unsigned long)idx, (unsigned long)containers.count)];
                     });
                 }
@@ -572,8 +572,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                 if (!granted || !safeContainer) {
                     scanLimited = YES;
                     limitedContainers++;
-                    wq_log(@"cache scan: %@ (%@) %@", c.lastPathComponent, wq_bundle_id_for_container(c) ?: @"未知 App",
-                           safeContainer ? @"拒绝访问" : @"未通过路径安全检查");
+                    wq_log(@"cache scan: %@ (%@) %@", c.lastPathComponent, wq_bundle_id_for_container(c) ?: @"unknown app",
+                           safeContainer ? @"refused access" : @"failed the path safety check");
                 }
                 if (cacheState == WQCacheMeasurementLimited || tempState == WQCacheMeasurementLimited) {
                     scanLimited = YES;
@@ -624,7 +624,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         }
         if (crashState == WQCacheMeasurementLimited || crash > 0) {
             WQCacheItem *logs = [WQCacheItem new];
-            logs.name = WQLocalized(@"崩溃日志");
+            logs.name = WQLocalized(@"Crash Logs");
             logs.targets = @[kCrashLogsPath];
             logs.cacheBytes = crash;
             logs.cacheKnown = crashState != WQCacheMeasurementLimited;
@@ -660,8 +660,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         }
         NSString *note = nil;
         if (scanLimited) {
-            [notes addObject:WQLocalized(@"受限的行已排除；其余行仍可清理")];
-            note = WQLocalizedFormat(@"扫描不完整：%@。详见日志。", [notes componentsJoinedByString:@"; "]);
+            [notes addObject:WQLocalized(@"limited rows are excluded; the remaining rows can still be cleaned")];
+            note = WQLocalizedFormat(@"Scan incomplete: %@. See Log.", [notes componentsJoinedByString:@"; "]);
         } else if (emptyRoots.count) {
             note = WQLocalizedFormat(emptyRoots.count == 1 ? @"No %@ container found." : @"No %@ containers found.",
                                      [emptyRoots componentsJoinedByString:@" or "]);
@@ -690,24 +690,52 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     return section == 0 ? 1 : (NSInteger)self.visibleItems.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (NSString *)cacheHeaderTextForSection:(NSInteger)section
 {
     if (section == 0 || !_items.count) return nil;
     NSUInteger shown = self.visibleItems.count;
     NSUInteger appCount = 0;
     for (WQCacheItem *item in _items) if (!item.crashLogs) appCount++;
-    if (!appCount) return WQLocalized(@"崩溃日志");
-    return _query.length ? WQLocalizedFormat(@"%lu / %lu", (unsigned long)shown, (unsigned long)_items.count)
+    if (!appCount) return WQLocalized(@"Crash Logs");
+    return _query.length ? WQLocalizedFormat(@"%lu of %lu", (unsigned long)shown, (unsigned long)_items.count)
                          : WQLocalizedFormat(@"%lu apps and extensions", (unsigned long)appCount);
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (NSString *)cacheFooterTextForSection:(NSInteger)section
 {
     if (section == 0 || !_items.count) return nil;
     NSArray<WQCacheItem *> *selected = [_items filteredArrayUsingPredicate:
         [NSPredicate predicateWithFormat:@"selected == YES"]];
-    return [WQCacheFooterScope(selected) stringByAppendingString:WQLocalized(@" 请先关闭正在运行的 App。")];
+    return [WQCacheFooterScope(selected) stringByAppendingString:WQLocalized(@" Close running apps first.")];
 }
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
+{
+    return wq_table_text_header([self cacheHeaderTextForSection:section], tableView.bounds.size.width, YES);
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
+{
+    return wq_table_text_header([self cacheFooterTextForSection:section], tableView.bounds.size.width, NO);
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    return [self wq_heightForSectionView:[self tableView:tableView viewForHeaderInSection:section] inTableView:tableView];
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
+{
+    return [self wq_heightForSectionView:[self tableView:tableView viewForFooterInSection:section] inTableView:tableView];
+}
+- (CGFloat)wq_heightForSectionView:(UIView *)view inTableView:(UITableView *)tableView
+{
+    CGSize size = [view systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
+                     withHorizontalFittingPriority:UILayoutPriorityRequired
+                           verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
+}
+
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
@@ -718,7 +746,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         NSUInteger n = 0;
         for (WQCacheItem *it in _items) { total += it.bytes; if (it.selected) { selected += it.bytes; n++; } }
         BOOL busy = _scanning || _cleaning;
-        cell.captionLabel.text = busy ? (_cleaning ? WQLocalized(@"正在清理") : WQLocalized(@"正在扫描")) : WQLocalized(@"可释放");
+        cell.captionLabel.text = busy ? (_cleaning ? WQLocalized(@"Cleaning") : WQLocalized(@"Scanning")) : WQLocalized(@"Reclaimable");
         if (busy) [cell.spinner startAnimating]; else [cell.spinner stopAnimating];
         cell.totalLabel.text = (_scanning && !_items.count) ? @"–" : wq_size_text(total);
         cell.bar.progress = total ? (float)((double)selected / (double)total) : 0;
@@ -733,12 +761,12 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     WQCacheItem *item = self.visibleItems[(NSUInteger)indexPath.row];
     cell.nameLabel.text = item.name;
     if (item.crashLogs) {
-        cell.detailLabel.text = item.cacheKnown ? WQLocalized(@"崩溃日志 · osanalytics") : WQLocalized(@"崩溃日志 · 访问受限");
+        cell.detailLabel.text = item.cacheKnown ? WQLocalized(@"Crash Logs · osanalytics") : WQLocalized(@"Crash Logs · access limited");
     } else {
         NSString *cache = item.cacheKnown ? wq_size_text(item.cacheBytes) : WQLocalized(@"unknown");
         NSString *temp = item.tempKnown ? wq_size_text(item.tempBytes) : WQLocalized(@"unknown");
-        cell.detailLabel.text = WQLocalizedFormat(@"缓存 %@ · 临时 %@%@", cache, temp,
-                                 item.limited ? WQLocalized(@" · 访问受限") : @"");
+        cell.detailLabel.text = WQLocalizedFormat(@"cache %@ · temp %@%@", cache, temp,
+                                 item.limited ? WQLocalized(@" · access limited") : @"");
     }
     cell.sizeLabel.text = wq_size_text(item.bytes);
     cell.iconView.image = wq_app_icon(item.bundleID)
@@ -755,8 +783,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     if (indexPath.section == 0 || _scanning || _cleaning) return;
     WQCacheItem *item = self.visibleItems[(NSUInteger)indexPath.row];
     if (item.limited) {
-        wq_alert(self, @"无法清理",
-                 @"此行的访问或身份信息不完整。请在 App 关闭时重新扫描，或用文件浏览器入口查看。");
+        wq_alert(self, @"Not cleanable",
+                 @"This row has incomplete access or identity information. Scan again while the app is closed, or use its file browser entry to inspect it.");
         return;
     }
     item.selected = !item.selected;
@@ -782,20 +810,20 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         NSMutableArray *actions = [NSMutableArray new];
         if (item.crashLogs) {
             NSString *root = item.targets.firstObject;
-            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"在文件浏览器中显示崩溃日志") image:[UIImage systemImageNamed:@"folder"]
-                                              identifier:nil handler:^(UIAction *__unused a) { [weakSelf openFolder:root title:WQLocalizedNullable(@"崩溃日志")]; }]];
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Show Crash Logs in File Browser") image:[UIImage systemImageNamed:@"folder"]
+                                              identifier:nil handler:^(UIAction *__unused a) { [weakSelf openFolder:root title:WQLocalizedNullable(@"Crash Logs")]; }]];
         } else {
             NSString *caches = item.targets[0], *tmp = item.targets[1];
-            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"在文件浏览器中显示缓存") image:[UIImage systemImageNamed:@"folder"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Show Caches in File Browser") image:[UIImage systemImageNamed:@"folder"]
                                               identifier:nil handler:^(UIAction *__unused a) {
-                [weakSelf openFolder:caches title:[item.name stringByAppendingString:WQLocalized(@" · 缓存")]];
+                [weakSelf openFolder:caches title:[item.name stringByAppendingString:WQLocalized(@" · Caches")]];
             }]];
             if (item.tempBytes > 0)
-                [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"在文件浏览器中显示 tmp") image:[UIImage systemImageNamed:@"folder"]
+                [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Show tmp in File Browser") image:[UIImage systemImageNamed:@"folder"]
                                                   identifier:nil handler:^(UIAction *__unused a) {
                     [weakSelf openFolder:tmp title:[item.name stringByAppendingString:WQLocalized(@" · tmp")]];
                 }]];
-            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"在文件浏览器中显示 App 数据") image:[UIImage systemImageNamed:@"folder.badge.gearshape"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Show App Data in File Browser") image:[UIImage systemImageNamed:@"folder.badge.gearshape"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 [weakSelf openFolder:caches.stringByDeletingLastPathComponent.stringByDeletingLastPathComponent title:item.name];
             }]];
@@ -817,7 +845,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 - (void)stopClean
 {
     [_cleanCancellation cancel];
-    [self setStatus:WQLocalizedNullable(@"当前项目完成后停止…")];
+    [self setStatus:WQLocalizedNullable(@"Stopping after the current item…")];
 }
 
 - (void)confirmClean
@@ -831,10 +859,10 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         sel += item.bytes;
     }
     if (!selected.count) return;
-    NSString *msg = WQLocalizedFormat(@"%@（约 %@）？此操作无法撤销。请先关闭所选 App；可在项目之间停止。", WQCacheConfirmationScope(selected), wq_size_text(sel));
-    UIAlertController *alert = wq_alert_controller(@"清理缓存？", msg, UIAlertControllerStyleAlert);
-    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
-    [alert addAction:wq_alert_action(@"清理", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+    NSString *msg = WQLocalizedFormat(@"%@, about %@? This cannot be undone. Close the selected apps first; you can stop between items.", WQCacheConfirmationScope(selected), wq_size_text(sel));
+    UIAlertController *alert = wq_alert_controller(@"Clean caches?", msg, UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"Clean", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         [self clean];
     })];
     [self presentViewController:alert animated:YES completion:nil];
@@ -847,7 +875,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     _cleanCancellation = cancellation;
     _cleaning = YES;
     [self updateButtons];
-    [self setStatus:WQLocalizedNullable(@"正在清理…")];
+    [self setStatus:WQLocalizedNullable(@"Cleaning…")];
     dispatch_async(wq_io(), ^{
         unsigned long long freed = 0;
         BOOL allOk = YES;
@@ -858,7 +886,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             NSString *reason = nil;
             if (!WQCacheValidateItem(item, &reason)) {
                 allOk = NO;
-                validationFailure = validationFailure ?: [NSString stringWithFormat:@"%@ (%@)", item.name, reason ?: @"身份已改变"];
+                validationFailure = validationFailure ?: [NSString stringWithFormat:@"%@ (%@)", item.name, reason ?: @"identity changed"];
                 wq_log(@"clean: refusing %@ because %@", item.name, reason ?: @"identity validation failed");
             }
         }
@@ -869,7 +897,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                 self->_scanLimited = YES;
                 self->_cleanRequiresRescan = YES;
                 self->_status = nil;
-                self->_result = WQLocalizedFormat(@"清理已取消：%@。重试前请重新扫描。", validationFailure);
+                self->_result = WQLocalizedFormat(@"Clean cancelled: %@. Scan again before retrying.", validationFailure);
                 [self.tableView reloadData];
                 [self updateButtons];
             });
@@ -880,14 +908,14 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             if (cancellation.isCancelled) { cancelled = YES; break; }
             i++;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self setStatus:WQLocalizedFormat(@"正在清理 %lu / %lu：%@", (unsigned long)i, (unsigned long)selected.count, item.name)];
+                [self setStatus:WQLocalizedFormat(@"Cleaning %lu of %lu: %@", (unsigned long)i, (unsigned long)selected.count, item.name)];
             });
             for (WQCacheTargetRecord *record in item.targetRecords) {
                 if (cancellation.isCancelled) { cancelled = YES; break; }
                 NSString *reason = nil;
                 if (!WQCacheValidateItem(item, &reason)) {
                     allOk = NO;
-                    validationFailure = [NSString stringWithFormat:@"%@ (%@)", item.name, reason ?: @"身份已改变"];
+                    validationFailure = [NSString stringWithFormat:@"%@ (%@)", item.name, reason ?: @"identity changed"];
                     wq_log(@"clean: stopped before %@ because %@", record.path, reason ?: @"identity validation failed");
                     break;
                 }
@@ -905,7 +933,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             if (cancelled) {
                 self->_status = nil;
                 [self scan];
-                self->_result = WQLocalizedFormat(@"已停止，释放 %@。%@", wq_size_text(freed),
+                self->_result = WQLocalizedFormat(@"Stopped. Freed %@.%@", wq_size_text(freed),
                                  allOk ? @"" : WQLocalized(@" Some items could not be removed (see Log)."));
                 return;
             }
@@ -913,13 +941,13 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                 self->_scanLimited = YES;
                 self->_cleanRequiresRescan = YES;
                 self->_status = nil;
-                self->_result = WQLocalizedFormat(@"清理已停止：%@。重试前请重新扫描。", validationFailure);
+                self->_result = WQLocalizedFormat(@"Clean stopped: %@. Scan again before retrying.", validationFailure);
                 [self.tableView reloadData];
                 [self updateButtons];
             } else {
                 self->_status = nil;
                 [self scan];
-                self->_result = WQLocalizedFormat(@"已释放 %@。%@", wq_size_text(freed),
+                self->_result = WQLocalizedFormat(@"Freed %@.%@", wq_size_text(freed),
                                  allOk ? @"" : WQLocalized(@" Some items could not be removed (see Log)."));
             }
         });

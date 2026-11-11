@@ -42,7 +42,7 @@ def main() -> int:
     app["developerName"] = "kolbicz / 汉化：yebuwudong"
     app["subtitle"] = "iOS 26/27 文件管理器（worse_query）· 汉化版"
     app["localizedDescription"] = (
-        "界面已汉化的 WQ Files：iOS 26/27 的文件浏览器、App 数据管理与缓存清理工具，"
+        "使用苹果官方简体中文界面的 WQ Files：iOS 26/27 的文件浏览器、App 数据管理与缓存清理工具，"
         "基于 worse_query 沙盒技术，无需越狱。\n\n"
         "• 浏览每个 App 的数据容器、App 群组、扩展与守护进程容器\n"
         "• 属性列表编辑器与十六进制查看/编辑器，改动前先备份\n"

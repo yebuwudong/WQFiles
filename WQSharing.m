@@ -234,7 +234,7 @@ static NSString *wq_zip_name(NSString *dir)
     }
     if (i != NSNotFound && i + 1 == parts.count - 1) {
         NSString *bid = parts.lastObject;
-        return [NSString stringWithFormat:@"%@ backups", wq_display_name(bid) ?: bid];
+        return [NSString stringWithFormat:@"%@ 个备份", wq_display_name(bid) ?: bid];
     }
     return dir.lastPathComponent;
 }

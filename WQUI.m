@@ -7,6 +7,7 @@
 #import "WQUI.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
+#import <fcntl.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 
@@ -102,14 +103,31 @@ static UIImage *wq_real_icon(NSString *bundleID)
 // The icon from the app's own bundle, for when iOS only hands out its
 // placeholder (iOS 26 refuses this app's icon requests). Reads the primary
 // icon names from Info.plist and loads the matching PNG files.
+// The first few outcomes go to the Log, to see why icons are missing.
+static void wq_icon_note(NSString *bundleID, NSString *what)
+{
+    static NSUInteger notes;
+    @synchronized (NSNull.null) {
+        if (notes >= 8) return;
+        notes++;
+    }
+    wq_log(@"icon: %@: %@", bundleID, what);
+}
+
 static UIImage *wq_bundle_icon(NSString *bundleID)
 {
     NSString *path = wq_bundle_path_for_id(bundleID);
-    if (!path.length) return nil;
+    if (!path.length) { wq_icon_note(bundleID, @"no bundle path in the app database"); return nil; }
     NSString *plistPath = [path stringByAppendingPathComponent:@"Info.plist"];
     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
     if (!info && wq_grant(path)) info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
-    if (![info isKindOfClass:NSDictionary.class]) return nil;
+    if (![info isKindOfClass:NSDictionary.class]) {
+        int fd = open(plistPath.fileSystemRepresentation, O_RDONLY);
+        int err = fd < 0 ? errno : 0;
+        if (fd >= 0) close(fd);
+        wq_icon_note(bundleID, [NSString stringWithFormat:@"can't read %@ (%s)", plistPath, err ? strerror(err) : "not a plist"]);
+        return nil;
+    }
     NSMutableArray<NSString *> *names = [NSMutableArray new];
     for (NSString *key in @[@"CFBundleIcons", @"CFBundleIcons~ipad"]) {
         NSDictionary *primary = [info[key] isKindOfClass:NSDictionary.class] ? info[key][@"CFBundlePrimaryIcon"] : nil;
@@ -127,9 +145,14 @@ static UIImage *wq_bundle_icon(NSString *bundleID)
         NSString *base = name.stringByDeletingPathExtension;
         for (NSString *suffix in @[@"@3x.png", @"@2x.png", @"@2x~ipad.png", @"~ipad.png", @".png"]) {
             UIImage *image = [UIImage imageWithContentsOfFile:[path stringByAppendingPathComponent:[base stringByAppendingString:suffix]]];
-            if (image.CGImage) return image;
+            if (image.CGImage) {
+                wq_icon_note(bundleID, [NSString stringWithFormat:@"loaded %@%@ from the app", base, suffix]);
+                return image;
+            }
         }
     }
+    wq_icon_note(bundleID, [NSString stringWithFormat:@"no icon PNG in %@ (tried %@)", path.lastPathComponent,
+                            [names componentsJoinedByString:@", "]]);
     return nil;
 }
 
@@ -243,7 +266,9 @@ UIImage *wq_app_icon(NSString *bundleID)
     // main thread. Lists warm the cache from their background passes; a
     // main-thread miss gets the tile without caching it.
     BOOL background = !NSThread.isMainThread;
-    UIImage *raw = wq_real_icon(bundleID) ?: (background ? wq_bundle_icon(bundleID) : nil);
+    UIImage *system = wq_real_icon(bundleID);
+    if (system && background) wq_icon_note(bundleID, @"iOS returned an icon");
+    UIImage *raw = system ?: (background ? wq_bundle_icon(bundleID) : nil);
     NSArray *parts = [bundleID componentsSeparatedByString:@"."];
     for (NSInteger n = (NSInteger)parts.count - 1; !raw && n >= 3; n--)
     {

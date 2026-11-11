@@ -305,10 +305,13 @@ BOOL wq_grant(NSString *path)
             usedAlt = !altFirst;
         }
     }
-    if (handle >= 0 && preferAlt != (int)usedAlt) {
-        if (preferAlt >= 0 || usedAlt != !wq_system_areas_reachable())
-            wq_log(@"grant: the %@ query flags work on this device", usedAlt ? @"alternative" : @"standard");
+    // Decided once, by the first grant that works: some targets refuse to
+    // open for their own reasons, and a per-target fallback already covers
+    // the rest, so flipping the preference back and forth only costs queries.
+    if (handle >= 0 && preferAlt < 0) {
         preferAlt = usedAlt;
+        if (usedAlt != !wq_system_areas_reachable())
+            wq_log(@"grant: the %@ query flags work on this device", usedAlt ? @"alternative" : @"standard");
     }
     if (handle >= 0) {  // failures are retried next time
         gGrants[key] = @(handle);
@@ -1232,6 +1235,58 @@ BOOL wq_rename(NSString *path, NSString *newName, NSString **errorText)
     return rc == 0;
 }
 
+BOOL wq_move(NSString *path, NSString *destDir, NSString **errorText)
+{
+    NSString *source = WQCanonicalVarPath(path), *target = WQCanonicalVarPath(destDir);
+    NSString *name = source.lastPathComponent;
+    if (!WQAbsolutePathGrammar(source) || !WQAbsolutePathGrammar(target) || !name.length) {
+        if (errorText) *errorText = @"Invalid path";
+        return NO;
+    }
+    NSString *sourceParent = source.stringByDeletingLastPathComponent;
+    if ([sourceParent isEqualToString:target]) {
+        if (errorText) *errorText = @"It is already in this folder";
+        return NO;
+    }
+    if ([target isEqualToString:source] || [target hasPrefix:[source stringByAppendingString:@"/"]]) {
+        if (errorText) *errorText = @"A folder can't be moved into itself";
+        return NO;
+    }
+    if (wq_is_backup_storage_path(source) || wq_is_backup_storage_path([target stringByAppendingPathComponent:name])) {
+        if (errorText) *errorText = @"Backup storage cannot be changed through the file browser.";
+        return NO;
+    }
+    int from = wq_open_directory_flags(sourceParent, O_SEARCH);
+    if (from < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
+    int to = wq_open_directory_flags(target, O_SEARCH);
+    if (to < 0) { if (errorText) *errorText = wq_errno(errno); close(from); return NO; }
+    const char *n = name.fileSystemRepresentation;
+    // RENAME_EXCL: never replaces an item that is already there.
+    int rc = renameatx_np(from, n, to, n, RENAME_EXCL);
+    if (rc != 0 && wq_is_denied(errno)) {
+        wq_grant(sourceParent);
+        wq_grant(target);
+        wq_grant(source);
+        rc = renameatx_np(from, n, to, n, RENAME_EXCL);
+    }
+    int err = errno;
+    if (rc == 0) { fsync(to); fsync(from); }
+    close(from);
+    close(to);
+    wq_log(@"move: %@ -> %@: %@", path, destDir, rc == 0 ? @"OK" : wq_errno(err));
+    if (rc != 0 && errorText) {
+        *errorText = err == EEXIST ? [NSString stringWithFormat:@"An item named \"%@\" is already there", name]
+                   : err == EXDEV ? @"Items can't be moved to another volume"
+                   : wq_errno(err);
+    }
+    return rc == 0;
+}
+
+int wq_open_for_reading(NSString *path)
+{
+    return wq_open(path, O_RDONLY, 0);
+}
+
 // fsgetpath: resolve a filesystem object id to a path. Not in the public SDK.
 extern ssize_t fsgetpath(char *buf, size_t buflen, fsid_t *fsid, uint64_t objid);
 
@@ -1292,7 +1347,8 @@ typedef void (^WQScanProgress)(int64_t done, int64_t total, const NSUInteger *co
 static NSArray<NSMutableDictionary<NSString *, NSNumber *> *> *wq_scan_children(fsid_t fsid, int64_t firstId, int64_t lastId,
                                                                                NSArray<NSString *> *bases,
                                                                                WQScanCancellation *cancellation,
-                                                                               qos_class_t qos, WQScanProgress progress)
+                                                                               qos_class_t qos, BOOL allCores,
+                                                                               WQScanProgress progress)
 {
     NSUInteger baseCount = MIN(bases.count, (NSUInteger)8);
     // Heap tables: blocks can't capture C arrays.
@@ -1313,7 +1369,10 @@ static NSArray<NSMutableDictionary<NSString *, NSNumber *> *> *wq_scan_children(
     int64_t chunks = (total + chunk - 1) / chunk;
     __block int64_t nextChunk = 0, done = 0;
     NSUInteger cores = NSProcessInfo.processInfo.activeProcessorCount;
-    size_t workers = (size_t)MAX((NSUInteger)1, MIN((NSUInteger)4, cores / 2));
+    // A full scan the user agreed to wait for uses all but two cores; the
+    // short incremental scans stay at half the cores.
+    size_t workers = allCores ? (size_t)MAX((NSUInteger)2, MIN((NSUInteger)8, cores > 2 ? cores - 2 : 1))
+                              : (size_t)MAX((NSUInteger)1, MIN((NSUInteger)4, cores / 2));
     dispatch_apply(workers, dispatch_get_global_queue(qos, 0), ^(size_t __unused w) {
         fsid_t id = fsid;
         char buf[1200];
@@ -1597,7 +1656,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *wq_mcm_list_containers(N
 
 // Samples ids across the volume. On some releases fsgetpath resolves only the
 // caller's own files; then a full scan takes minutes and finds nothing.
-static BOOL wq_fsgetpath_sees_others(fsid_t fsid, int64_t maxInode)
+static BOOL wq_fsgetpath_sees_others(fsid_t fsid, int64_t maxInode, double *idsPerSecond)
 {
     NSMutableArray<NSString *> *own = [NSMutableArray arrayWithObject:wq_norm(NSHomeDirectory())];
     NSString *bundle = wq_norm(NSBundle.mainBundle.bundlePath.stringByDeletingLastPathComponent);
@@ -1636,7 +1695,72 @@ static BOOL wq_fsgetpath_sees_others(fsid_t fsid, int64_t maxInode)
             [parts addObject:[NSString stringWithFormat:@"%@ x%lu", area, (unsigned long)[areas countForObject:area]]];
         wq_log(@"scan: resolvable areas: %@", [parts componentsJoinedByString:@", "]);
     }
+    double elapsed = CFAbsoluteTimeGetCurrent() - started;
+    if (idsPerSecond) *idsPerSecond = elapsed > 0 ? sampled / elapsed : 0;
     return foreign > 0;
+}
+
+// Full scans (every file id) take minutes on a well-used device. The UI
+// confirms them first and shows their progress; without a UI hook (or when
+// the app isn't in front) they don't start.
+static BOOL (*gFullScanConfirm)(NSString *what, int64_t ids, double seconds);
+static void (*gFullScanProgress)(int64_t done, int64_t total, BOOL finished);
+static WQScanCancellation *gFullScanStop;
+static _Atomic BOOL gFullScanDeclined;
+
+void wq_set_full_scan_ui(BOOL (*confirm)(NSString *what, int64_t ids, double seconds),
+                         void (*progress)(int64_t done, int64_t total, BOOL finished))
+{
+    gFullScanConfirm = confirm;
+    gFullScanProgress = progress;
+}
+
+void wq_full_scan_stop(void)
+{
+    @synchronized (NSNull.null) { [gFullScanStop cancel]; }
+}
+
+BOOL wq_full_scan_was_declined(void)
+{
+    return atomic_load(&gFullScanDeclined);
+}
+
+// Asks before a full scan. Returns the scan's stop token, or nil when the user
+// (or the missing UI) declined.
+static WQScanCancellation *wq_full_scan_begin(NSString *what, int64_t ids, double seconds)
+{
+    // Without an App Group no container can be opened or named, so a long
+    // scan would only produce a list of unusable folders.
+    if (!wq_app_group()) {
+        atomic_store(&gFullScanDeclined, YES);
+        wq_log(@"scan: no App Group; full scan of %@ skipped", what);
+        return nil;
+    }
+    if (!gFullScanConfirm || !gFullScanConfirm(what, ids, seconds)) {
+        atomic_store(&gFullScanDeclined, YES);
+        wq_log(@"scan: full scan of %@ not started (%lld ids, about %.0f s)", what, (long long)ids, seconds);
+        return nil;
+    }
+    atomic_store(&gFullScanDeclined, NO);
+    WQScanCancellation *stop = [WQScanCancellation new];
+    @synchronized (NSNull.null) { gFullScanStop = stop; }
+    return stop;
+}
+
+static void wq_full_scan_end(WQScanCancellation *stop)
+{
+    @synchronized (NSNull.null) { if (gFullScanStop == stop) gFullScanStop = nil; }
+    if (gFullScanProgress) gFullScanProgress(0, 0, YES);
+    if (stop.isCancelled) wq_log(@"scan: full scan stopped");
+}
+
+// Rough duration of a full scan from a single-thread sample rate.
+static double wq_full_scan_estimate(int64_t ids, double sampleRate)
+{
+    NSUInteger cores = NSProcessInfo.processInfo.activeProcessorCount;
+    double workers = MAX(2.0, MIN(8.0, cores > 2 ? (double)cores - 2 : 1.0));
+    double rate = (sampleRate > 0 ? sampleRate : 15000.0) * workers * 0.8;
+    return ids / rate;
 }
 
 static NSArray<NSString *> *(*gContainerListProvider)(NSString *storeHint);
@@ -1656,8 +1780,11 @@ static BOOL wq_is_ls_store_name(const char *path)
 
 // The LaunchServices database is rewritten on every app install or update, so
 // its id is among the newest: scan down from the top and stop at the first.
+static const CFTimeInterval kWQStoreSearchLimit = 20;
+
 static NSString *wq_scan_for_ls_store(fsid_t fsid, int64_t maxInode, qos_class_t qos, WQScanProgress progress)
 {
+    CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     const int64_t chunk = 32768;
     int64_t chunks = (maxInode + chunk - 1) / chunk;
     __block int64_t nextChunk = 0, done = 0;
@@ -1676,6 +1803,9 @@ static NSString *wq_scan_for_ls_store(fsid_t fsid, int64_t maxInode, qos_class_t
             int64_t c = nextChunk++;
             [lock unlock];
             if (c >= chunks) return;
+            // Normally found among the newest ids within seconds; past the
+            // limit the full scan is the better way (and asks first).
+            if (CFAbsoluteTimeGetCurrent() - started > kWQStoreSearchLimit) { [stop cancel]; return; }
             int64_t last = maxInode - c * chunk, first = MAX((int64_t)1, last - chunk + 1);
             for (int64_t ino = last; ino >= first; ino--) {
                 if ((ino & 127) == 0 && stop.isCancelled) return;
@@ -1696,7 +1826,21 @@ static NSString *wq_scan_for_ls_store(fsid_t fsid, int64_t maxInode, qos_class_t
     return found;
 }
 
-// iOS 26: the App Data and Extensions lists from the LaunchServices database.
+// The LaunchServices database keeps containers of earlier installs that no
+// longer exist. Drop those (lstat says ENOENT even without access); keep
+// anything that exists or can't be checked.
+static NSArray<NSString *> *wq_existing_containers(NSArray<NSString *> *paths, NSUInteger *dropped)
+{
+    NSMutableArray *kept = [NSMutableArray arrayWithCapacity:paths.count];
+    struct stat st;
+    for (NSString *path in paths) {
+        if (lstat(path.fileSystemRepresentation, &st) != 0 && errno == ENOENT) { (*dropped)++; continue; }
+        [kept addObject:path];
+    }
+    return kept;
+}
+
+// The App Data and Extensions lists from the LaunchServices database.
 static NSDictionary<NSString *, NSArray<NSString *> *> *wq_containers_from_ls_store(NSArray<NSString *> *roots, fsid_t fsid,
                                                                                    qos_class_t qos, WQScanProgress progress)
 {
@@ -1716,13 +1860,18 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *wq_containers_from_ls_st
         paths = gContainerListProvider(store);
         how = [NSString stringWithFormat:@"found by id in %.1f s", CFAbsoluteTimeGetCurrent() - started];
         if (paths.count < 2) {
-            wq_log(@"scan: the LaunchServices database at %@ lists no containers", store);
+            wq_log(@"scan: the LaunchServices database at %@ couldn't be read or lists no containers", store);
             return nil;
         }
     }
+    NSUInteger stale = 0;
+    NSMutableArray *normalized = [NSMutableArray arrayWithCapacity:paths.count];
+    for (NSString *path in paths) [normalized addObject:wq_norm(path)];
+    paths = wq_existing_containers(normalized, &stale);
+    if (stale) wq_log(@"scan: %lu containers in the LaunchServices database no longer exist (earlier installs); skipped", (unsigned long)stale);
     NSMutableDictionary<NSString *, NSMutableArray *> *byRoot = [NSMutableDictionary new];
     for (NSString *root in roots) byRoot[root] = [NSMutableArray new];
-    for (NSString *path in paths) [byRoot[wq_norm(path).stringByDeletingLastPathComponent] addObject:wq_norm(path)];
+    for (NSString *path in paths) [byRoot[path.stringByDeletingLastPathComponent] addObject:path];
     if ([byRoot[roots[0]] count] < 2) return nil;
     NSMutableDictionary *result = [NSMutableDictionary new];
     for (NSString *root in roots) result[root] = [byRoot[root] sortedArrayUsingSelector:@selector(compare:)];
@@ -1737,6 +1886,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *wq_containers_from_ls_st
 static NSDictionary<NSString *, NSArray<NSString *> *> *wq_run_shared_scan(fsid_t fsid, qos_class_t qos, BOOL inodeOnly)
 {
     NSArray<NSString *> *roots = wq_shared_scan_roots();
+    atomic_store(&gFullScanDeclined, NO);
     if (inodeOnly) goto inodeScan;
     {
     NSString *mcmSummary = nil;
@@ -1755,9 +1905,9 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *wq_run_shared_scan(fsid_
         if (![merged[roots[2]] count]) merged[roots[2]] = @[];
         return merged;
     }
-    if (!wq_system_areas_reachable()) {
-        // A full scan of a well-used iOS 26 device is 100+ million ids
-        // (about 40 minutes); the database lists the same containers.
+    {
+        // A full scan is tens of millions of ids (minutes, up to most of an
+        // hour); the database lists the same app and extension containers.
         WQScanProgress report = ^(int64_t done, int64_t total, const NSUInteger *__unused counts) {
             void (^progress)(int64_t, int64_t, NSUInteger) = nil;
             @synchronized (gSharedScanGuard) { progress = gScanProgress; }
@@ -1792,9 +1942,17 @@ inodeScan:;
         firstId = [cache[@"probe"] longLongValue] + 1;
         fullAt = [cache[@"fullAt"] doubleValue];
     }
-    if (!cache && !wq_fsgetpath_sees_others(fsid, maxInode)) {
+    double sampleRate = 0;
+    if (!cache && !wq_fsgetpath_sees_others(fsid, maxInode, &sampleRate)) {
         wq_log(@"scan: on this iOS version fsgetpath only resolves WQ Files' own files, so containers can't be found by scanning");
         return nil;
+    }
+    WQScanCancellation *stop = nil;
+    if (!cache) {
+        stop = wq_full_scan_begin(inodeOnly ? @"Internal Daemons" : @"the app folders", maxInode,
+                                  wq_full_scan_estimate(maxInode, sampleRate));
+        if (!stop) return nil;
+        qos = QOS_CLASS_USER_INITIATED;
     }
     CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     WQScanProgress report = ^(int64_t done, int64_t total, const NSUInteger *counts) {
@@ -1802,8 +1960,10 @@ inodeScan:;
         NSUInteger index = 0;
         @synchronized (gSharedScanGuard) { progress = gScanProgress; index = gScanProgressIndex; }
         if (progress) progress(done, total, (index < roots.count ? known[index].count : 0) + (index < 8 ? counts[index] : 0));
+        if (stop && gFullScanProgress) gFullScanProgress(done, total, NO);
     };
-    NSArray *lists = wq_scan_children(fsid, firstId, maxInode, roots, nil, qos, report);
+    NSArray *lists = wq_scan_children(fsid, firstId, maxInode, roots, stop, qos, stop != nil, report);
+    if (stop) wq_full_scan_end(stop);
     if (!lists) return nil;
     NSMutableDictionary *saved = [NSMutableDictionary new];
     NSMutableDictionary *scan = [NSMutableDictionary new];
@@ -1861,7 +2021,7 @@ static NSArray<NSString *> *wq_shared_children(NSString *base, fsid_t fsid, WQSc
     NSUInteger baseIndex = [wq_shared_scan_roots() indexOfObject:base];
     // iOS 26 lists apps and extensions from the LaunchServices database; only
     // Internal Daemons need the (long) id scan.
-    BOOL inodeOnly = !wq_system_areas_reachable() && [base isEqualToString:@"/private/var/mobile/Containers/Data/InternalDaemon"];
+    BOOL inodeOnly = [base isEqualToString:@"/private/var/mobile/Containers/Data/InternalDaemon"];
     WQScanSlot *slot = wq_scan_slot(inodeOnly);
     id owner = [NSObject new];
     dispatch_group_t group = nil;
@@ -1958,8 +2118,11 @@ NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode, WQScanCancell
             NSMutableArray *groups = [NSMutableArray new];
             for (NSString *path in all)
                 if ([wq_norm(path).stringByDeletingLastPathComponent isEqualToString:base]) [groups addObject:wq_norm(path)];
+            NSUInteger stale = 0;
+            groups = [wq_existing_containers(groups, &stale) mutableCopy];
             [groups sortUsingSelector:@selector(compare:)];
-            wq_log(@"enumerate %@: %lu group containers from the LaunchServices database", dir, (unsigned long)groups.count);
+            wq_log(@"enumerate %@: %lu group containers from the LaunchServices database%@", dir, (unsigned long)groups.count,
+                   stale ? [NSString stringWithFormat:@" (%lu no longer exist, skipped)", (unsigned long)stale] : @"");
             if (progress) progress(1, 1, groups.count);
             return groups;
         }
@@ -1976,8 +2139,28 @@ NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode, WQScanCancell
         wq_log(@"enumerate %@: inode bound is too large to scan safely", dir);
         return nil;
     }
-    NSArray *lists = wq_scan_children(fsid, 1, maxInode, @[base], cancellation, QOS_CLASS_USER_INITIATED,
-        progress ? ^(int64_t done, int64_t total, const NSUInteger *counts) { progress(done, total, counts[0]); } : nil);
+    WQScanCancellation *stop = nil;
+    if (dynamicBound) {
+        stop = wq_full_scan_begin(base.lastPathComponent, maxInode, wq_full_scan_estimate(maxInode, 0));
+        if (!stop) return nil;
+    }
+    // Either the caller's cancellation or the scan window's Stop ends it.
+    WQScanCancellation *either = stop ?: cancellation;
+    if (stop && cancellation) {
+        either = [WQScanCancellation new];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            while (!either.isCancelled) {
+                if (stop.isCancelled || cancellation.isCancelled) { [either cancel]; break; }
+                usleep(200000);
+            }
+        });
+    }
+    NSArray *lists = wq_scan_children(fsid, 1, maxInode, @[base], either, QOS_CLASS_USER_INITIATED, stop != nil,
+        ^(int64_t done, int64_t total, const NSUInteger *counts) {
+            if (progress) progress(done, total, counts[0]);
+            if (stop && gFullScanProgress) gFullScanProgress(done, total, NO);
+        });
+    if (stop) { wq_full_scan_end(stop); [either cancel]; }
     if (!lists) return nil;
     if (dynamicBound) wq_check_scan_completion(fsid, probeInode, dir);
     return wq_sorted_paths(lists.firstObject);
@@ -2111,8 +2294,38 @@ static BOOL wq_remove_entry(int parent, NSString *name, NSString *path, unsigned
         if (fstatat(parent, item, &current, AT_SYMLINK_NOFOLLOW) != 0 || !WQSameObject(&before, &current)) return NO;
         rc = unlinkat(parent, item, directory ? AT_REMOVEDIR : 0);
     }
+    // A user-immutable or append-only flag (on the item or its folder) makes
+    // unlink fail with EPERM even for the owner. The owner may clear those
+    // flags, so clear them and try once more. System flags stay untouched.
+    if (rc != 0 && errno == EPERM &&
+        fstatat(parent, item, &current, AT_SYMLINK_NOFOLLOW) == 0 && WQSameObject(&before, &current)) {
+        const uint32_t userLocks = UF_IMMUTABLE | UF_APPEND;
+        struct stat parentStat = {0};
+        BOOL cleared = NO;
+        if (fstat(parent, &parentStat) == 0 && (parentStat.st_flags & userLocks))
+            cleared = fchflags(parent, parentStat.st_flags & ~userLocks) == 0;
+        if ((current.st_flags & userLocks) && !S_ISLNK(current.st_mode)) {
+            int flagsFd = openat(parent, item, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC |
+                                 (directory ? O_DIRECTORY : 0));
+            struct stat opened;
+            if (flagsFd >= 0 && fstat(flagsFd, &opened) == 0 && WQSameObject(&before, &opened) &&
+                fchflags(flagsFd, opened.st_flags & ~userLocks) == 0) cleared = YES;
+            if (flagsFd >= 0) close(flagsFd);
+        }
+        if (cleared) {
+            wq_log(@"purge: cleared lock flags (item 0x%x, folder 0x%x) on %@",
+                   current.st_flags, parentStat.st_flags, path);
+            rc = unlinkat(parent, item, directory ? AT_REMOVEDIR : 0);
+        } else {
+            errno = EPERM;
+        }
+    }
     if (rc == 0 && !directory && freed) *freed += (unsigned long long)before.st_size;
-    if (rc != 0) wq_log(@"purge: %@ -> %@", path, wq_errno(errno));
+    if (rc != 0) {
+        int err = errno;
+        wq_log(@"purge: %@ -> %@ (flags 0x%x, uid %u, mode %o)", path, wq_errno(err),
+               current.st_flags, current.st_uid, current.st_mode & 07777);
+    }
     return rc == 0;
 }
 

@@ -187,13 +187,13 @@ static BOOL WQCacheRecordIdentityMatches(WQCacheTargetRecord *record, NSString *
     WQCachePathState state = WQCacheInspectPath(record.path, &st);
     if (!record.existed) {
         if (state == WQCachePathMissing) return YES;
-        if (reason) *reason = [NSString stringWithFormat:@"%@ appeared after the scan", record.path];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ 是在扫描后出现的", record.path];
         return NO;
     }
     if (state != WQCachePathExisting || !record.identityKnown ||
         st.st_dev != record.device || st.st_ino != record.inode ||
         (st.st_mode & S_IFMT) != record.mode) {
-        if (reason) *reason = [NSString stringWithFormat:@"%@ changed after the scan", record.path];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ 在扫描后发生了改变", record.path];
         return NO;
     }
     return YES;
@@ -234,17 +234,17 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     if (WQCacheInspectPath(item.containerPath, &container) != WQCachePathExisting ||
         !S_ISDIR(container.st_mode) || container.st_dev != item.containerDevice ||
         container.st_ino != item.containerInode || (container.st_mode & S_IFMT) != item.containerMode) {
-        if (reason) *reason = [NSString stringWithFormat:@"%@ changed after the scan", item.name];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ 在扫描后发生了改变", item.name];
         return NO;
     }
     NSString *label = wq_container_label(item.containerPath);
     if (!item.bundleID.length || ![label isEqualToString:item.bundleID]) {
-        if (reason) *reason = [NSString stringWithFormat:@"%@ no longer has the scanned container identity", item.name];
+        if (reason) *reason = [NSString stringWithFormat:@"%@ 已不再具有扫描时的容器身份", item.name];
         return NO;
     }
     for (WQCacheTargetRecord *record in item.targetRecords) {
         if (!WQCacheSafetyTargetMatchesContainer(record.path, item.containerPath, record.relativePath)) {
-            if (reason) *reason = [NSString stringWithFormat:@"%@ has unsafe path ancestry", record.path];
+            if (reason) *reason = [NSString stringWithFormat:@"%@ 的上级路径不安全", record.path];
             return NO;
         }
         if (!WQCacheRecordIdentityMatches(record, reason)) return NO;

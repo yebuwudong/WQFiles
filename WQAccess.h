@@ -91,6 +91,11 @@ BOOL wq_backup_unit_deletable(NSString *path);
 // copy is made.
 BOOL wq_delete_backup(NSString *path, NSString *_Nullable *_Nullable errorText);
 BOOL wq_rename(NSString *path, NSString *newName, NSString *_Nullable *_Nullable errorText);
+// Moves a file or folder into destDir (same volume), keeping its name. Never
+// replaces an existing item; refuses moves into itself and into backups.
+BOOL wq_move(NSString *path, NSString *destDir, NSString *_Nullable *_Nullable errorText);
+// Read-only descriptor for a regular file (asks for access when refused), or -1.
+int wq_open_for_reading(NSString *path);
 
 // lstat with access retry. Returns NO if the item does not exist.
 BOOL wq_stat(NSString *path, struct stat *st);
@@ -158,6 +163,16 @@ NSString *_Nullable wq_container_label(NSString *dir);
 // iOS 26: where a full scan takes far too long, the App Data and Extensions
 // lists come from this provider (the LaunchServices database). storeHint is a
 // database path the scan found, or nil for the remembered one.
+// Full scans (every file id; minutes on a well-used device) only start after
+// `confirm` returns YES; it's called on a background thread with what is being
+// listed, the number of ids and a rough duration. `progress` reports a running
+// full scan and its end (finished = YES). Without these hooks no full scan runs.
+void wq_set_full_scan_ui(BOOL (*_Nullable confirm)(NSString *what, int64_t ids, double seconds),
+                         void (*_Nullable progress)(int64_t done, int64_t total, BOOL finished));
+// Stops the running full scan (the scan window's Stop button).
+void wq_full_scan_stop(void);
+// Whether the last listing failed because a full scan wasn't confirmed.
+BOOL wq_full_scan_was_declined(void);
 void wq_set_container_list_provider(NSArray<NSString *> *_Nullable (*_Nullable provider)(NSString *_Nullable storeHint));
 void wq_set_container_label_resolver(NSString *_Nullable (*_Nullable resolver)(NSString *path));
 

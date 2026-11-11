@@ -1,32 +1,42 @@
 {
-  "name": "WQ 文件（汉化）",
-  "identifier": "cz.kolbi.wqfiles.zh.source",
-  "subtitle": "iOS 26/27 文件管理器 · 汉化版",
-  "description": "WQ Files 汉化版，基于 kolbicz/WQFiles 自动构建。",
+  "name": "Worse Query Files",
+  "identifier": "cz.kolbi.wqfiles.source",
+  "subtitle": "File manager for iOS 26 and 27",
+  "description": "AltStore / SideStore source for WQ Files by kolbicz.",
   "iconURL": "https://raw.githubusercontent.com/kolbicz/WQFiles/main/icons/AppIcon1024.png",
-  "website": "https://github.com/yebuwudong/WQFiles",
+  "website": "https://github.com/kolbicz/WQFiles",
   "tintColor": "#1E8FC7",
   "featuredApps": [
     "cz.kolbi.wqfiles"
   ],
   "apps": [
     {
-      "name": "WQ 文件（汉化）",
+      "name": "WQ Files",
       "bundleIdentifier": "cz.kolbi.wqfiles",
-      "developerName": "kolbicz / 汉化：yebuwudong",
-      "subtitle": "iOS 26/27 文件管理器（worse_query）· 汉化版",
-      "localizedDescription": "界面已汉化的 WQ Files：iOS 26/27 的文件浏览器、App 数据管理与缓存清理工具，基于 worse_query 沙盒技术，无需越狱。\n\n• 浏览每个 App 的数据容器、App 群组、扩展与守护进程容器\n• 属性列表编辑器与十六进制查看/编辑器，改动前先备份\n• 备份、还原、清除 App 数据，备份可打包成 ZIP 通过 AirDrop 分享\n• 缓存清理\n\n支持 iOS 26 与 27；iOS 26 上无法访问系统数据和系统群组。需要会保留 App Group 权限的签名工具。",
+      "developerName": "kolbicz",
+      "subtitle": "File manager for iOS 26 and 27 (worse_query)",
+      "localizedDescription": "File browser, app data manager and cache cleaner for iOS 26 and 27, built on the worse_query sandbox technique. No jailbreak and no kernel exploit.\n\n• Browse every app's data container, app groups, extension and daemon containers\n• Plist editor and hex viewer/editor; edits are backed up first\n• Back up, restore and clear app data; AirDrop backups as ZIP\n• Cache cleaner\n\niOS 27 (tested on 27.0.1 and 27.2), preliminary support for iOS 26 (tested on 26.7.1; System Data, System Groups and app icons are not available there). Needs a signer that keeps the App Group entitlement.",
       "iconURL": "https://raw.githubusercontent.com/kolbicz/WQFiles/main/icons/AppIcon1024.png",
       "tintColor": "#1E8FC7",
       "category": "utilities",
       "versions": [
         {
+          "version": "0.8",
+          "buildVersion": "34",
+          "date": "2026-11-10",
+          "size": 320067,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.8/WQFiles.ipa",
+          "localizedDescription": "Apps show up in seconds on every iOS version (no more long first scan); full scans only when needed and after you agree. New: sorting, A–Z sidebar, read-only SQLite viewer, swipe to delete, signing check at launch. Preliminary iOS 26 support.",
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "0.7",
           "buildVersion": "26",
           "date": "2026-11-10",
-          "size": 298041,
-          "downloadURL": "https://github.com/yebuwudong/WQFiles/releases/download/zh-latest/WQFiles-zh.ipa",
-          "localizedDescription": "汉化版 0.7（build 26）。"
+          "size": 295895,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.7/WQFiles.ipa",
+          "localizedDescription": "iOS 27.2: app names are back. iOS 26 (26.0 – 26.7.2) is supported. Faster scans that are remembered, swipe to delete in the file browser, and a more detailed Log.",
+          "minOSVersion": "26.0"
         },
         {
           "version": "0.6",

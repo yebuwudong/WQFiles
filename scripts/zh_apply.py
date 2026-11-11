@@ -17,12 +17,21 @@ ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "i18n" / "zh.txt"
 # 只改界面层的字符串；数据层（备份清单键、日志、状态字符串）必须是英文。
 TARGETS = ["main.m", "WQApps.m", "WQCache.m", "WQSharing.m", "WQPlistEditor.m",
-           "WQHexViewer.m", "WQUI.m"]
+           "WQHexViewer.m", "WQUI.m", "WQSQLiteViewer.m", "WQArchive.m"]
 LOG_CALLS = ("wq_log(", "NSLog(", "fprintf(", "printf(")
 # 这些不是界面文案：谓词、日期格式、机型营销名。
 IGNORE = ("selected == YES", "yyyy-MM-dd HH.mm.ss", "en_US_POSIX", "Backups", "AppBackups",
           "Before restore", "<!DOCTYPE plist", "<plist")
 IGNORE_PREFIX = ("iPhone",)
+# 这些是日志/诊断文字（部分经 NSLog 之外的方式输出），保留英文。
+IGNORE_KEYS = {
+    "can't read %@ (%s)", "loaded %@%@ from the app", "no icon PNG in %@ (tried %@)",
+    "iOS returned an icon", "finding app containers", "reading app names",
+    "WQ full scan", "generation changed", "PRAGMA query_only = ON",
+    "cleanup failed", "no free name", "no bundle path in the app database",
+    "SELECT count(*) FROM sqlite_master", "SELECT name, type FROM sqlite_master",
+    "SELECT * FROM (%@) LIMIT %lu OFFSET %lu",
+}
 
 UNESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "'": "'", "0": "\0"}
 
@@ -106,15 +115,35 @@ def rewrite(path: Path, table: dict, pending: list) -> int:
             i = end
             continue
         if c == '"':
-            j, body = i + 1, []
+            j, parts = i + 1, []
             while j < len(text) and text[j] != '"':
                 if text[j] == "\\" and j + 1 < len(text):
-                    body.append(text[j:j + 2])
+                    parts.append(text[j:j + 2])
                     j += 2
                     continue
-                body.append(text[j])
+                parts.append(text[j])
                 j += 1
-            raw = "".join(body)
+            raw = "".join(parts)
+            close = j + 1
+            # Objective-C 会把相邻字面量拼成一个字符串（"a" "b" 或 @"a" @"b"），
+            # 合并后再查表，这样跨行写成的长句也能整体替换。
+            while True:
+                k = close
+                while k < len(text) and text[k] in " \t\r\n":
+                    k += 1
+                if k < len(text) and text[k] == "@" and k + 1 < len(text) and text[k + 1] == '"':
+                    k += 1
+                if k >= len(text) or text[k] != '"':
+                    break
+                k += 1
+                while k < len(text) and text[k] != '"':
+                    if text[k] == "\\" and k + 1 < len(text):
+                        raw += text[k:k + 2]
+                        k += 2
+                        continue
+                    raw += text[k]
+                    k += 1
+                close = k + 1
             logical = unescape(raw)
             line_start = text.rfind("\n", 0, i) + 1
             prefix = "".join(out)[line_start:]
@@ -122,14 +151,18 @@ def rewrite(path: Path, table: dict, pending: list) -> int:
             if logical in table and not in_log and logical not in IGNORE:
                 out.append('"' + escape(table[logical]) + '"')
                 changed += 1
-            else:
-                if not in_log and not logical.startswith(IGNORE_PREFIX) \
-                        and logical not in IGNORE and re.search(r"[A-Za-z]{3,}", logical) and " " in logical.strip() \
-                        and "%@" not in logical.split(" ")[0] and re.fullmatch(r"[ -~]+", logical) \
-                        and not re.fullmatch(r"[a-z0-9_.\-/ ]+", logical):
-                    pending.append(f"{path.name}: {logical[:70]}")
-                out.append(text[i:j + 1])
-            i = j + 1
+                i = close
+                continue
+            if not in_log and not logical.startswith(IGNORE_PREFIX) \
+                    and logical not in IGNORE and logical not in IGNORE_KEYS \
+                    and re.search(r"[A-Za-z]{3,}", logical) and " " in logical.strip() \
+                    and re.fullmatch(r"[ -~]+", logical) \
+                    and not re.fullmatch(r"[a-z0-9_.\-/ ]+", logical) \
+                    and not logical.startswith(("SELECT", "PRAGMA", "EXPLAIN", "WITH ")) \
+                    and not re.match(r"^[a-z][a-z ]{1,24}: ", logical):
+                pending.append(f"{path.name}: {logical[:70]}")
+            out.append(text[i:close])
+            i = close
             continue
         out.append(c)
         i += 1

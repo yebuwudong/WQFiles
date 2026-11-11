@@ -1,17 +1,17 @@
-> **Requires:** iOS 26.0 – 26.7.2 or iOS 27. Tested on iOS 26.7.1, 27.0.1 and 27.2.
+> **Requires:** iOS 27, or iOS 26.0 – 26.7.2 (preliminary support). Tested on iOS 27.0.1, 27.2 and 26.7.1.
 > **Needs:** a sideloading tool that keeps the App Group entitlement. If the Log says "No App Group", re-sign with one that does; see [Signing](https://github.com/kolbicz/WQFiles#signing-the-app-group) in the README.
 
 # Worse Query Files 0.7
 
-## iOS 27.2: app names are back
+## iOS 27.2: apps show their names
 
 On iOS 27.2, apps and extensions showed up as long IDs without names, and the Cache Cleaner couldn't clean anything ([#1](https://github.com/kolbicz/WQFiles/issues/1), [#7](https://github.com/kolbicz/WQFiles/issues/7), [#8](https://github.com/kolbicz/WQFiles/issues/8), [#9](https://github.com/kolbicz/WQFiles/issues/9)). iOS 27.2 stores the app database differently; WQ Files now reads it, and finds out which apps the containers belong to from it.
 
-## iOS 26 is supported (26.0 – 26.7.2)
+## Preliminary iOS 26 support (26.0 – 26.7.2)
 
 - **Apps, Extension Data and App Groups are listed from the app database.** A full scan would take most of an hour on iOS 26; the database is found once and remembered.
 - **Internal Daemons** need a full scan on iOS 26. The first one takes long and shows the time left; later ones only check new files.
-- **Icons** are loaded from the app itself where iOS 26 hands out only a placeholder.
+- **Icons** are missing on iOS 26: iOS doesn't hand them out to WQ Files there, so apps show symbol tiles.
 - System Data and System Groups can't be reached on iOS 26 and are hidden.
 
 ## Faster scans

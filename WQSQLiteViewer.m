@@ -333,7 +333,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
 {
-    return [self wq_heightForSectionView:[self tableView:tableView viewForHeaderInSection:section] inTableView:tableView];
+    return wq_table_section_height([self tableView:tableView viewForHeaderInSection:section], tableView.bounds.size.width);
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -614,19 +614,12 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
 {
-    return [self wq_heightForSectionView:[self tableView:tableView viewForHeaderInSection:section] inTableView:tableView];
+    return wq_table_section_height([self tableView:tableView viewForHeaderInSection:section], tableView.bounds.size.width);
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
 {
-    return [self wq_heightForSectionView:[self tableView:tableView viewForFooterInSection:section] inTableView:tableView];
-}
-- (CGFloat)wq_heightForSectionView:(UIView *)view inTableView:(UITableView *)tableView
-{
-    CGSize size = [view systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-                     withHorizontalFittingPriority:UILayoutPriorityRequired
-                           verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
+    return wq_table_section_height([self tableView:tableView viewForFooterInSection:section], tableView.bounds.size.width);
 }
 
 

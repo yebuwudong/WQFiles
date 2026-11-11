@@ -795,7 +795,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
 {
-    return [self wq_heightForSectionView:[self tableView:tableView viewForHeaderInSection:section] inTableView:tableView];
+    return wq_table_section_height([self tableView:tableView viewForHeaderInSection:section], tableView.bounds.size.width);
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
@@ -805,16 +805,9 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
 {
-    return [self wq_heightForSectionView:[self tableView:tableView viewForFooterInSection:section] inTableView:tableView];
+    return wq_table_section_height([self tableView:tableView viewForFooterInSection:section], tableView.bounds.size.width);
 }
 
-- (CGFloat)wq_heightForSectionView:(UIView *)view inTableView:(UITableView *)tableView
-{
-    CGSize size = [view systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-                     withHorizontalFittingPriority:UILayoutPriorityRequired
-                           verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
-}
 
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath

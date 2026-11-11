@@ -359,6 +359,15 @@ UIView *wq_table_text_header(NSString *text, CGFloat width, BOOL isHeader)
     return box;
 }
 
+CGFloat wq_table_section_height(UIView *view, CGFloat width)
+{
+    if (!view) return 0;
+    CGSize size = [view systemLayoutSizeFittingSize:CGSizeMake(width, 0)
+                     withHorizontalFittingPriority:UILayoutPriorityRequired
+                           verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    return size.height;
+}
+
 NSString *wq_size_text(unsigned long long size)
 {
     if (size == 0) return @"0 KB";

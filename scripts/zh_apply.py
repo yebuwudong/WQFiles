@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "i18n" / "zh.txt"
 # 只改界面层的字符串；数据层（备份清单键、日志、状态字符串）必须是英文。
 TARGETS = ["main.m", "WQApps.m", "WQCache.m", "WQSharing.m", "WQPlistEditor.m",
-           "WQHexViewer.m", "WQUI.m", "WQSQLiteViewer.m", "WQArchive.m"]
+           "WQHexViewer.m", "WQUI.m", "WQSQLiteViewer.m", "WQArchive.m", "WQAccess.m"]
+# 会显示给用户的错误文本一并汉化；被测试断言的文案已同步改成译文。
 LOG_CALLS = ("wq_log(", "NSLog(", "fprintf(", "printf(")
 # 这些不是界面文案：谓词、日期格式、机型营销名。
 IGNORE = ("selected == YES", "yyyy-MM-dd HH.mm.ss", "en_US_POSIX", "Backups", "AppBackups",
@@ -28,6 +29,8 @@ IGNORE_KEYS = {
     "can't read %@ (%s)", "loaded %@%@ from the app", "no icon PNG in %@ (tried %@)",
     "iOS returned an icon", "finding app containers", "reading app names",
     "WQ full scan", "generation changed", "PRAGMA query_only = ON",
+    "%s (errno %d)", "uid %d", "found by id in %.1f s", "full (%@)",
+    "; %lu removed since the last scan", " (%lu no longer exist, skipped)",
     "cleanup failed", "no free name", "no bundle path in the app database",
     "SELECT count(*) FROM sqlite_master", "SELECT name, type FROM sqlite_master",
     "SELECT * FROM (%@) LIMIT %lu OFFSET %lu",
@@ -147,7 +150,7 @@ def rewrite(path: Path, table: dict, pending: list) -> int:
             logical = unescape(raw)
             line_start = text.rfind("\n", 0, i) + 1
             prefix = "".join(out)[line_start:]
-            in_log = any(call in prefix for call in LOG_CALLS)
+            in_log = any(call in prefix for call in LOG_CALLS) or "*summary" in prefix
             if logical in table and not in_log and logical not in IGNORE:
                 out.append('"' + escape(table[logical]) + '"')
                 changed += 1

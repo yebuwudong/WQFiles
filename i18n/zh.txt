@@ -515,10 +515,8 @@ Cannot move	无法移动
 Delete %lu items?	删除 %lu 个项目？
 Files are copied to Backups first. Folders are deleted only when they are empty.	文件会先复制到「备份」，文件夹只有在为空时才能删除。
 Cannot compress	无法压缩
-Can't create a temporary folder	无法创建临时文件夹
 Created %@. %lu symbolic link%@ or special file%@ were left out.	已创建 %@。已跳过 %lu 个符号链接%@ 或特殊文件%@。
 Cannot extract	无法解压
-Copying failed.	复制失败。
 Extracted %lu file%@ into %@. %lu symbolic link%@ in the ZIP were left out.	已将 %lu 个文件%@ 解压到 %@。ZIP 中的 %lu 个符号链接%@ 已跳过。
 WQ Files has no App Group, so it can't open other apps' folders. Re-sign it with a tool that keeps the App Group (see Signing in the README).	WQ 文件没有 App Group 权限，无法打开其他 App 的文件夹。请用会保留 App Group 的工具重新签名（参见 README 的签名说明）。
 Not listed yet: this needs a scan of all files. Pull down to start it.	尚未列出：这需要扫描一次所有文件。下拉即可开始。
@@ -548,40 +546,6 @@ Copy Bundle ID	拷贝 Bundle ID
 Measuring %lu/%lu…	正在统计 %lu/%lu…
 Moving “%@”	正在移动「%@」
 Please wait…	请稍候…
-Nothing to compress	没有可压缩的内容
-Not a ZIP file	不是 ZIP 文件
-Not a ZIP file (no directory found)	不是 ZIP 文件（未找到目录）
-Not a regular file	不是普通文件
-Not enough free space to extract this ZIP	可用空间不足以解压此 ZIP
-Folders are nested too deeply	文件夹嵌套层级过深
-Out of memory	内存不足
-Compression failed	压缩失败
-Extraction failed	解压失败
-The ZIP contains an unsafe name (%@); nothing was extracted.	ZIP 中包含不安全的名称（%@），未解压任何内容。
-The ZIP contains %@ twice	ZIP 中重复包含 %@
-The ZIP file is damaged (bad compressed data)	ZIP 文件已损坏（压缩数据有误）
-The ZIP file is damaged (bad directory)	ZIP 文件已损坏（目录区有误）
-The ZIP file is damaged (bad entry)	ZIP 文件已损坏（条目有误）
-The ZIP file is damaged (bad entry header)	ZIP 文件已损坏（条目头有误）
-The ZIP file is damaged (bad sizes)	ZIP 文件已损坏（大小信息有误）
-The ZIP file is damaged (checksum mismatch)	ZIP 文件已损坏（校验和不匹配）
-The ZIP file is damaged (data ends early)	ZIP 文件已损坏（数据提前结束）
-The ZIP file is damaged (entry larger than stated)	ZIP 文件已损坏（条目大于声明大小）
-The ZIP file is damaged (entry out of range)	ZIP 文件已损坏（条目超出范围）
-This ZIP is encrypted, which isn't supported.	此 ZIP 已加密，暂不支持。
-This ZIP uses a compression method that isn't supported (%u).	此 ZIP 使用了不支持的压缩方式（%u）。
-Too many items for one ZIP (more than 65535).	单个 ZIP 的项目过多（超过 65535）。
-Two selected items have the same name	两个所选项的名称相同
-The archive would be larger than 4 GB, which isn't supported yet.	压缩包将超过 4 GB，暂不支持。
-Can't create %@ (%s)	无法创建 %@（%s）
-Can't create the folder %@	无法创建文件夹 %@
-Can't create the folder for %@	无法为 %@ 创建文件夹
-Can't list %@	无法列出 %@
-Can't read %@ (%s)	无法读取 %@（%s）
-Can't read the ZIP directory	无法读取 ZIP 目录
-Can't read the ZIP file	无法读取 ZIP 文件
-Can't start compression	无法开始压缩
-Can't start decompression	无法开始解压
 Copying and opening…	正在复制并打开…
 Cannot export	无法导出
 Cannot open this database: 	无法打开此数据库：
@@ -592,13 +556,6 @@ Only read-only statements (SELECT, read-only PRAGMA, EXPLAIN) can run here.	此�
 Run one statement at a time.	请一次只执行一条语句。
 This statement returns no rows.	此语句不返回任何行。
 Tables and views	表和视图
-cannot create the temporary copy	无法创建临时副本
-cannot write the temporary copy	无法写入临时副本
-cannot create a temporary folder	无法创建临时文件夹
-cannot create the CSV file	无法创建 CSV 文件
-cannot open the database	无法打开数据库
-read failed	读取失败
-write failed	写入失败
 %lu of %lu files were imported.\n\n%@	已导入 %lu / %lu 个文件。\n\n%@
 %lu of %lu items weren't deleted.\n\n%@	有 %lu / %lu 个项目未能删除。\n\n%@
 %lu of %lu items weren't moved.\n\n%@	有 %lu / %lu 个项目未能移动。\n\n%@
@@ -633,3 +590,81 @@ reading the identifier of %@	正在读取 %@ 的标识符
 measuring %@ (%@)	正在统计 %@（%@）
 Cannot remove the restore recovery journal	无法移除还原恢复日志
 Replaces the app's current Documents and Library with the backup from %@; tmp is left untouched. The current data is backed up first, and put back if anything fails. Close the app first: a running app can make the operation non-snapshot-consistent.%@	用 %@ 的备份替换该 App 当前的 Documents 和 Library；tmp 保持不变。当前数据会先备份，出错时会放回。请先关闭该 App：App 运行期间操作不保证快照一致性。%@
+Not a ZIP file	不是 ZIP 文件
+Not a ZIP file (no directory found)	不是 ZIP 文件（未找到目录）
+Not a regular file	不是普通文件
+Not enough free space to extract this ZIP	可用空间不足以解压此 ZIP
+The ZIP contains an unsafe name (%@); nothing was extracted.	ZIP 中包含不安全的名称（%@），未解压任何内容。
+The ZIP contains %@ twice	ZIP 中重复包含 %@
+The ZIP file is damaged (bad compressed data)	ZIP 文件已损坏（压缩数据有误）
+The ZIP file is damaged (bad directory)	ZIP 文件已损坏（目录区有误）
+The ZIP file is damaged (bad entry)	ZIP 文件已损坏（条目有误）
+The ZIP file is damaged (bad entry header)	ZIP 文件已损坏（条目头有误）
+The ZIP file is damaged (bad sizes)	ZIP 文件已损坏（大小信息有误）
+The ZIP file is damaged (checksum mismatch)	ZIP 文件已损坏（校验和不匹配）
+The ZIP file is damaged (data ends early)	ZIP 文件已损坏（数据提前结束）
+The ZIP file is damaged (entry larger than stated)	ZIP 文件已损坏（条目大于声明大小）
+The ZIP file is damaged (entry out of range)	ZIP 文件已损坏（条目超出范围）
+This ZIP is encrypted, which isn't supported.	此 ZIP 已加密，暂不支持。
+This ZIP uses a compression method that isn't supported (%u).	此 ZIP 使用了不支持的压缩方式（%u）。
+Too many items for one ZIP (more than 65535).	单个 ZIP 的项目过多（超过 65535）。
+Two selected items have the same name	两个所选项的名称相同
+Folders are nested too deeply	文件夹嵌套层级过深
+Out of memory	内存不足
+Can't create %@ (%s)	无法创建 %@（%s）
+Can't create the folder %@	无法创建文件夹 %@
+Can't create the folder for %@	无法为 %@ 创建文件夹
+Can't list %@	无法列出 %@
+Can't read %@ (%s)	无法读取 %@（%s）
+Can't read the ZIP directory	无法读取 ZIP 目录
+Can't read the ZIP file	无法读取 ZIP 文件
+Can't start compression	无法开始压缩
+Can't start decompression	无法开始解压
+Can't create a temporary folder	无法创建临时文件夹
+The archive would be larger than 4 GB, which isn't supported yet.	压缩包将超过 4 GB，暂不支持。
+Copying failed.	复制失败。
+Compression failed	压缩失败
+Extraction failed	解压失败
+Nothing to compress	没有可压缩的内容
+Backup of the current file failed, nothing was written: %@	当前文件的备份失败，未写入任何内容：%@
+The path is invalid or belongs to backup storage.	路径无效或属于备份存储。
+Cannot allocate a backup name.	无法分配备份名称。
+Not enough free space for a full backup copy	可用空间不足以完成完整备份副本
+Backup copy failed.	备份副本失败。
+The file changed after it was opened. Your edits were not written; reopen it and compare the changes.	文件在打开后发生了改变，你的修改未被写入；请重新打开并对比改动。
+Invalid file path	无效的文件路径
+Backup storage cannot be overwritten or deleted through the file browser.	备份存储不能通过文件浏览器覆盖或删除。
+The target path was replaced during writing	写入期间目标路径被替换
+Saved contents could not be verified; possible concurrent modification	无法校验保存后的内容，可能存在并发修改
+%@; %@. Backup: %@	%@；%@。备份：%@
+Write failed	写入失败
+Close failed: %@. Backup: %@	关闭失败：%@。备份：%@
+Cannot list this folder	无法列出此文件夹
+Source and destination are the same file	源与目标是同一个文件
+The source changed while it was being copied	复制期间源发生了改变
+Backup storage cannot be modified through the file browser.	备份存储不能通过文件浏览器修改。
+Cannot inspect the copy source	无法检查复制源
+Invalid copy path	无效的复制路径
+The source changed while it was copied	复制时源发生了改变
+Destination is not a regular file	目标不是普通文件
+A change lies past the end of the file	有一处修改位于文件末尾之后
+Only a complete backup unit can be deleted here.	此处只能删除完整的备份单元。
+Could not remove everything inside the backup.	无法删除备份中的全部内容。
+Invalid folder path	无效的文件夹路径
+Only empty folders can be deleted	只能删除空文件夹
+Invalid name	无效的名称
+Backup storage cannot be renamed through the file browser.	备份存储不能通过文件浏览器重命名。
+An item with that name already exists	已存在同名项目
+Invalid path	无效的路径
+It is already in this folder	它已经在此文件夹中
+A folder can't be moved into itself	文件夹不能移动到自身内部
+Backup storage cannot be changed through the file browser.	备份存储不能通过文件浏览器更改。
+An item named "%@" is already there	此处已有名为「%@」的项目
+Items can't be moved to another volume	项目不能移动到其他卷
+Source and destination trees overlap or have invalid paths	源与目标的目录树重叠或路径无效
+Cannot safely open distinct source and destination folders	无法安全地打开相互独立的源与目标文件夹
+Cannot read the source folder	无法读取源文件夹
+A copy root changed during copying	复制期间某个复制根目录发生了改变
+%@; staging/recovery contents retained at %@	%@；暂存/恢复内容已保留在 %@
+
+This file belongs to %@ (mode %o) and only its owner may %@ it. WQ Files reaches the folder, but runs as mobile (uid %d), so no app can %@ this file.	此文件属于 %@（权限 %o），只有其所有者可以执行「%@」。WQ 文件能访问该文件夹，但它以 mobile（uid %d）身份运行，所以任何 App 都无法执行「%@」。

@@ -4,6 +4,7 @@
 //
 
 #import <UIKit/UIKit.h>
+#import "WQLocalization.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -15,6 +16,14 @@ static inline UIBarButtonItemStyle wq_primary_button_style(void)
 
 dispatch_queue_t wq_io(void);
 void wq_alert(UIViewController *host, NSString *title, NSString *_Nullable message);
+// Settings → Allow Deleting (on by default). When off, every delete, clear and
+// clean action is hidden or refused.
+BOOL wq_deleting_allowed(void);
+void wq_set_deleting_allowed(BOOL allowed);
+// YES (after telling the user) when deleting is turned off.
+BOOL wq_refuse_if_deleting_off(UIViewController *host);
+UIAlertController *wq_alert_controller(NSString *_Nullable title, NSString *_Nullable message, UIAlertControllerStyle style);
+UIAlertAction *wq_alert_action(NSString *title, UIAlertActionStyle style, void (^_Nullable handler)(UIAlertAction *));
 NSString *wq_size_text(unsigned long long size);
 UIView *wq_device_header(CGFloat width);
 // "iPhone 17 Pro Max (iPhone18,2) · iOS 27.0.1 (24A446)"

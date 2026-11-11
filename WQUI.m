@@ -288,6 +288,40 @@ dispatch_queue_t wq_io(void)
     return queue;
 }
 
+static NSString *const kWQDeletingDisabledPref = @"WQDeletingDisabled";
+
+BOOL wq_deleting_allowed(void)
+{
+    return ![NSUserDefaults.standardUserDefaults boolForKey:kWQDeletingDisabledPref];
+}
+
+void wq_set_deleting_allowed(BOOL allowed)
+{
+    [NSUserDefaults.standardUserDefaults setBool:!allowed forKey:kWQDeletingDisabledPref];
+}
+
+BOOL wq_refuse_if_deleting_off(UIViewController *host)
+{
+    if (wq_deleting_allowed()) return NO;
+    UIAlertController *alert = wq_alert_controller(@"Deleting is turned off",
+        @"Turn on Allow Deleting on the start screen of WQ Files to delete, clear or clean.", UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"好", UIAlertActionStyleDefault, nil)];
+    [host presentViewController:alert animated:YES completion:nil];
+    return YES;
+}
+
+UIAlertController *wq_alert_controller(NSString *title, NSString *message, UIAlertControllerStyle style)
+{
+    return [UIAlertController alertControllerWithTitle:WQLocalizedNullable(title)
+                                               message:WQLocalizedNullable(message)
+                                        preferredStyle:style];
+}
+
+UIAlertAction *wq_alert_action(NSString *title, UIAlertActionStyle style, void (^handler)(UIAlertAction *))
+{
+    return [UIAlertAction actionWithTitle:WQLocalized(title) style:style handler:handler];
+}
+
 void wq_alert(UIViewController *host, NSString *title, NSString *message)
 {
     if (!host || !host.isViewLoaded || !host.view.window) return;
@@ -296,34 +330,9 @@ void wq_alert(UIViewController *host, NSString *title, NSString *message)
     UINavigationController *nav = host.navigationController;
     if (nav && nav.topViewController != host) return;
     if (host.presentedViewController && !host.presentedViewController.isBeingDismissed) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    UIAlertController *alert = wq_alert_controller(title, message, UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"好", UIAlertActionStyleDefault, nil)];
     [host presentViewController:alert animated:YES completion:nil];
-}
-
-// 分组标题/表尾：按可用宽度自动换行，不再被截断。
-UIView *wq_table_text_header(NSString *text, CGFloat width, BOOL isHeader)
-{
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 0)];
-    if (text.length == 0) return box;
-    UILabel *label = [UILabel new];
-    label.numberOfLines = 0;
-    label.lineBreakMode = NSLineBreakByWordWrapping;
-    label.font = [UIFont preferredFontForTextStyle:isHeader ? UIFontTextStyleFootnote : UIFontTextStyleFootnote];
-    label.adjustsFontForContentSizeCategory = YES;
-    label.textColor = UIColor.secondaryLabelColor;
-    label.text = text;
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [box addSubview:label];
-    CGFloat inset = isHeader ? 20 : 16;
-    [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:inset],
-        [label.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-inset],
-        [label.topAnchor constraintEqualToAnchor:box.topAnchor constant:isHeader ? 8 : 6],
-        [label.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:isHeader ? -6 : -10],
-    ]];
-    return box;
 }
 
 NSString *wq_size_text(unsigned long long size)

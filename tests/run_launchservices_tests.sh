@@ -10,7 +10,7 @@ cleanup() {
 trap cleanup EXIT
 MACOS_SDK=$(xcrun --sdk macosx --show-sdk-path)
 xcrun --sdk macosx clang -arch arm64 -fobjc-arc -fmodules -fmodules-cache-path="$OUT/modules-macos" -isysroot "$MACOS_SDK" \
-    -Wall -Wextra -Werror -I. WQLaunchServices.m tests/WQLaunchServicesTests.m \
+    -Wall -Wextra -Werror -I. WQLaunchServices.m WQLocalization.m tests/WQLaunchServicesTests.m \
     -framework Foundation -o "$BINARY"
 "$BINARY"
 IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)

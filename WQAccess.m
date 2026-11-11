@@ -15,6 +15,7 @@
 #import "WQAccess.h"
 #import "WQCore.h"
 #import "WQAccessSafety.h"
+#import "WQLocalization.h"
 #import <dlfcn.h>
 #import <objc/message.h>
 #import <dirent.h>
@@ -381,7 +382,7 @@ static BOOL wq_stream(int in, int out, NSString **errorText)
 {
     static const size_t kChunk = 1 << 20;
     uint8_t *buf = malloc(kChunk);
-    if (!buf) { if (errorText) *errorText = @"内存不足"; return NO; }
+    if (!buf) { if (errorText) *errorText = WQLocalized(@"内存不足"); return NO; }
     BOOL ok = YES;
     for (;;) {
         ssize_t n = read(in, buf, kChunk);
@@ -410,7 +411,7 @@ static BOOL wq_backup_fd(NSString *path, int fd, NSString **backupPath, NSString
     NSString *root = WQCanonicalVarPath(wq_backup_root());
     if (!WQAbsolutePathGrammar(original) || wq_is_backup_storage_path(original)) {
         wq_log(@"backup: refusing invalid path or mutation of backup storage: %@", path);
-        if (errorText) *errorText = @"路径无效或属于备份存储。";
+        if (errorText) *errorText = WQLocalized(@"路径无效或属于备份存储。");
         return NO;
     }
     static NSDateFormatter *fmt;
@@ -429,7 +430,7 @@ static BOOL wq_backup_fd(NSString *path, int fd, NSString **backupPath, NSString
         [NSString stringWithFormat:@"%@-%llu", [fmt stringFromDate:NSDate.date], (unsigned long long)++counter];
     [lock unlock];
     if (!stamp) {
-        if (errorText) *errorText = @"无法分配备份名称。";
+        if (errorText) *errorText = WQLocalized(@"无法分配备份名称。");
         return NO;
     }
     NSString *dest = [[root stringByAppendingPathComponent:stamp] stringByAppendingString:original];
@@ -465,7 +466,7 @@ static BOOL wq_backup_fd(NSString *path, int fd, NSString **backupPath, NSString
         if (fstat(fd, &sourceStat) == 0 && fstatfs(parent, &space) == 0) {
             unsigned long long available = (unsigned long long)space.f_bavail * (unsigned long long)space.f_bsize;
             if ((unsigned long long)sourceStat.st_size > available) {
-                error = @"可用空间不足以完成完整备份副本";
+                error = WQLocalized(@"可用空间不足以完成完整备份副本");
                 wq_log(@"backup: %@ (%@)", path, error);
                 if (errorText) *errorText = error;
                 close(parent);
@@ -487,7 +488,7 @@ static BOOL wq_backup_fd(NSString *path, int fd, NSString **backupPath, NSString
     close(parent);
     wq_log(@"backup: %@ -> %@", path, ok ? dest : error ?: @"失败");
     if (ok && backupPath) *backupPath = dest;
-    if (!ok && errorText) *errorText = error ?: @"备份副本失败。";
+    if (!ok && errorText) *errorText = error ?: WQLocalized(@"备份副本失败。");
     return ok;
 }
 
@@ -524,7 +525,7 @@ NSDictionary<NSString *, NSNumber *> *wq_file_version(NSString *path)
 
 static BOOL wq_changed(NSString **errorText)
 {
-    if (errorText) *errorText = @"文件在打开后发生了改变，你的修改未被写入；请重新打开并对比改动。";
+    if (errorText) *errorText = WQLocalized(@"文件在打开后发生了改变，你的修改未被写入；请重新打开并对比改动。");
     return NO;
 }
 
@@ -560,9 +561,9 @@ static BOOL wq_mutation_current(NSString *path, WQMutation *mutation, BOOL versi
 static BOOL wq_mutation_open(NSString *path, NSDictionary *expected, WQMutation *mutation, int flags, NSString **errorText)
 {
     *mutation = (WQMutation){ .fd = -1, .parent = -1 };
-    if (!WQAbsolutePathGrammar(WQCanonicalVarPath(path))) { if (errorText) *errorText = @"无效的文件路径"; return NO; }
+    if (!WQAbsolutePathGrammar(WQCanonicalVarPath(path))) { if (errorText) *errorText = WQLocalized(@"无效的文件路径"); return NO; }
     if (wq_is_backup_storage_path(path)) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器覆盖或删除。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器覆盖或删除。");
         return NO;
     }
     NSString *parent = path.stringByDeletingLastPathComponent;
@@ -598,8 +599,7 @@ static BOOL wq_mutation_backup(NSString *path, WQMutation *mutation, NSString **
     if (!wq_mutation_current(path, mutation, YES, errorText)) return NO;
     NSString *backupError = nil;
     if (!wq_backup_fd(path, mutation->fd, backup, &backupError)) {
-        if (errorText) *errorText = [NSString stringWithFormat:@"当前文件的备份失败，未写入任何内容：%@",
-                                     backupError ?: @"未知错误"];
+        if (errorText) *errorText = WQLocalizedFormat(@"当前文件的备份失败，未写入任何内容：%@", backupError ?: WQLocalized(@"未知错误"));
         return NO;
     }
     WQ_MUTATION_HOOK(@"backedUp", path);
@@ -680,29 +680,29 @@ static BOOL wq_mutation_finish(NSString *path, WQMutation *mutation, NSString *b
     if (ok && fsync(mutation->fd) != 0) { ok = NO; failure = wq_errno(errno); }
     WQ_MUTATION_HOOK(@"written", path);
     if (ok && !wq_mutation_current(path, mutation, NO, errorText)) {
-        ok = NO; failure = @"写入期间目标路径被替换";
+        ok = NO; failure = WQLocalized(@"写入期间目标路径被替换");
     }
     if (ok && (expectedData || expectedRuns)) {
         verifiedVersion = wq_verified_saved_version(mutation, expectedData, expectedRuns);
         if (!verifiedVersion || !wq_mutation_current(path, mutation, NO, errorText)) {
             ok = NO;
             rollbackAllowed = NO; // A concurrent writer may own the newer contents.
-            failure = @"无法校验保存后的内容，可能存在并发修改";
+            failure = WQLocalized(@"无法校验保存后的内容，可能存在并发修改");
         }
     }
     if (!ok) {
         NSString *rollbackError = nil;
         BOOL restored = rollbackAllowed && backup && wq_restore_backup_fd(mutation, backup, &rollbackError);
-        if (errorText) *errorText = [NSString stringWithFormat:@"%@；%@。备份：%@", failure ?: @"写入失败",
+        if (errorText) *errorText = [NSString stringWithFormat:@"%@；%@。备份：%@", failure ?: WQLocalized(@"写入失败"),
             restored ? @"the original descriptor contents were restored" :
-            (rollbackAllowed ? [@"rollback failed: " stringByAppendingString:rollbackError ?: @"未知错误"] :
+            (rollbackAllowed ? [@"rollback failed: " stringByAppendingString:rollbackError ?: WQLocalized(@"未知错误")] :
              @"no rollback was attempted to avoid overwriting concurrent changes"), backup ?: @"none"];
     }
     // Rollback must finish before close releases the lock. A close failure has
     // no safe reopen/rollback path; retain the durable backup and report it.
     if (close(mutation->fd) != 0 && ok) {
         ok = NO;
-        if (errorText) *errorText = [NSString stringWithFormat:@"关闭失败：%@。备份：%@", wq_errno(errno), backup];
+        if (errorText) *errorText = WQLocalizedFormat(@"关闭失败：%@。备份：%@", wq_errno(errno), backup);
     }
     mutation->fd = -1;
     wq_mutation_close(mutation);
@@ -715,7 +715,7 @@ NSArray<NSString *> *wq_list(NSString *dir, NSString **errorText)
     NSError *error = nil;
     NSArray *items = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:&error];
     if (!items && wq_grant(dir)) items = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:&error];
-    if (!items && errorText) *errorText = error.localizedDescription ?: @"无法列出此文件夹";
+    if (!items && errorText) *errorText = error.localizedDescription ?: WQLocalized(@"无法列出此文件夹");
     return items;
 }
 
@@ -833,7 +833,7 @@ BOOL wq_write_from_file(NSString *path, NSString *source, NSString **errorText)
     if (!wq_mutation_open(path, nil, &mutation, O_RDWR, errorText)) { close(in); return NO; }
     struct stat src;
     if (fstat(in, &src) != 0 || WQSameObject(&src, &mutation.before)) {
-        if (errorText) *errorText = @"源与目标是同一个文件";
+        if (errorText) *errorText = WQLocalized(@"源与目标是同一个文件");
         close(in); wq_mutation_close(&mutation); return NO;
     }
     NSDictionary *sourceVersion = wq_version_for_stat(&src);
@@ -846,7 +846,7 @@ BOOL wq_write_from_file(NSString *path, NSString *source, NSString **errorText)
     if (ok && (fstat(in, &srcAfter) != 0 ||
                ![sourceVersion isEqualToDictionary:wq_version_for_stat(&srcAfter)])) {
         ok = NO;
-        error = @"复制期间源发生了改变";
+        error = WQLocalized(@"复制期间源发生了改变");
     }
     if (!ok && !error) error = wq_errno(errno);
     close(in);
@@ -856,12 +856,12 @@ BOOL wq_write_from_file(NSString *path, NSString *source, NSString **errorText)
 BOOL wq_create_file_from(NSString *path, NSString *source, NSString **errorText)
 {
     if (wq_is_backup_storage_path(path)) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器修改。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器修改。");
         return NO;
     }
     NSString *canonical = WQCanonicalVarPath(path);
     if (!WQAbsolutePathGrammar(canonical)) {
-        if (errorText) *errorText = @"无效的文件路径";
+        if (errorText) *errorText = WQLocalized(@"无效的文件路径");
         return NO;
     }
     int in = WQOpenRegularAt(AT_FDCWD, source.fileSystemRepresentation, O_RDONLY, 0);
@@ -886,7 +886,7 @@ BOOL wq_create_file_from(NSString *path, NSString *source, NSString **errorText)
     if (fstat(in, &srcBefore) != 0) {
         close(fd); close(in); close(parent);
         unlinkat(parent, name, 0);
-        if (errorText) *errorText = @"无法检查复制源";
+        if (errorText) *errorText = WQLocalized(@"无法检查复制源");
         return NO;
     }
     NSDictionary *sourceVersion = wq_version_for_stat(&srcBefore);
@@ -897,7 +897,7 @@ BOOL wq_create_file_from(NSString *path, NSString *source, NSString **errorText)
     if (ok && (fstat(in, &srcAfter) != 0 ||
                ![sourceVersion isEqualToDictionary:wq_version_for_stat(&srcAfter)])) {
         ok = NO;
-        error = @"复制期间源发生了改变";
+        error = WQLocalized(@"复制期间源发生了改变");
     }
     close(in);
     if (close(fd) != 0 && ok) { ok = NO; error = wq_errno(errno); }
@@ -912,11 +912,11 @@ BOOL wq_create_file_from(NSString *path, NSString *source, NSString **errorText)
 BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString **errorText)
 {
     if (!WQAbsolutePathGrammar(WQCanonicalVarPath(path)) || !WQAbsolutePathGrammar(WQCanonicalVarPath(dest))) {
-        if (errorText) *errorText = @"无效的复制路径";
+        if (errorText) *errorText = WQLocalized(@"无效的复制路径");
         return NO;
     }
     if (wq_is_backup_storage_path(dest)) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器修改。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器修改。");
         return NO;
     }
     int in = wq_open(path, O_RDONLY, 0);
@@ -925,7 +925,7 @@ BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString **errorText)
     if (fstat(in, &source) != 0) { close(in); return NO; }
     // stat intentionally follows a destination alias for this identity check.
     if (stat(dest.fileSystemRepresentation, &destination) == 0 && WQSameObject(&source, &destination)) {
-        close(in); if (errorText) *errorText = @"源与目标是同一个文件"; return NO;
+        close(in); if (errorText) *errorText = WQLocalized(@"源与目标是同一个文件"); return NO;
     }
     int parent = WQOpenDirectoryNoLinks(dest.stringByDeletingLastPathComponent);
     if (parent < 0) { if (errorText) *errorText = wq_errno(errno); close(in); return NO; }
@@ -935,19 +935,19 @@ BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString **errorText)
     BOOL ok = wq_stream(in, out, errorText);
     struct stat after;
     if (ok && (fstat(in, &after) != 0 || ![wq_version_for_stat(&source) isEqualToDictionary:wq_version_for_stat(&after)])) {
-        ok = NO; if (errorText) *errorText = @"复制时源发生了改变";
+        ok = NO; if (errorText) *errorText = WQLocalized(@"复制时源发生了改变");
     }
     close(in);
     if (close(out) != 0 && ok) { ok = NO; if (errorText) *errorText = wq_errno(errno); }
     // Recheck aliases after the potentially long stream, still before replacing.
     if (ok && fstatat(parent, dest.lastPathComponent.fileSystemRepresentation, &destination, 0) == 0 && WQSameObject(&source, &destination)) {
-        ok = NO; if (errorText) *errorText = @"源与目标是同一个文件";
+        ok = NO; if (errorText) *errorText = WQLocalized(@"源与目标是同一个文件");
     }
     if (ok) {
         struct stat entry;
         if (fstatat(parent, dest.lastPathComponent.fileSystemRepresentation, &entry, AT_SYMLINK_NOFOLLOW) == 0 &&
             !S_ISREG(entry.st_mode) && !S_ISLNK(entry.st_mode)) {
-            ok = NO; if (errorText) *errorText = @"目标不是普通文件";
+            ok = NO; if (errorText) *errorText = WQLocalized(@"目标不是普通文件");
         }
     }
     if (ok && renameat(parent, stage.fileSystemRepresentation, parent, dest.lastPathComponent.fileSystemRepresentation) != 0) {
@@ -969,8 +969,8 @@ NSString *wq_permission_hint(NSString *path, BOOL forWriting)
                  : (st.st_gid == getgid() ? (st.st_mode >> 3 & need) != 0 : (st.st_mode & need) != 0);
     if (allowed) return nil;
     NSString *owner = st.st_uid == 0 ? @"root" : [NSString stringWithFormat:@"uid %d", (int)st.st_uid];
-    return [NSString stringWithFormat:@"此文件属于 %@（权限 %o），只有其所有者可以执行「%@」。WQ 文件能访问该文件夹，但它以 mobile（uid %d）身份运行，所以任何 App 都无法执行「%@」。",
-            owner, st.st_mode & 07777, forWriting ? @"change" : @"read", (int)me, forWriting ? @"change" : @"open"];
+    return WQLocalizedFormat(@"此文件属于 %@（权限 %o），只有其所有者可以执行「%@」。WQ 文件能访问该文件夹，但它以 mobile（uid %d）身份运行，所以任何 App 都无法执行「%@」。",
+            owner, st.st_mode & 07777, forWriting ? WQLocalized(@"change") : WQLocalized(@"read"), (int)me, forWriting ? WQLocalized(@"change") : WQLocalized(@"open"));
 }
 
 NSData *wq_read_range(NSString *path, unsigned long long offset, NSUInteger length, NSString **errorText)
@@ -1000,7 +1000,7 @@ static BOOL wq_patch_checked(NSString *path, NSDictionary<NSNumber *, NSData *> 
     unsigned long long size = (unsigned long long)mutation.before.st_size;
     for (NSNumber *off in runs) {
         if (!WQPatchRangeValid(off.unsignedLongLongValue, runs[off].length, size)) {
-            if (errorText) *errorText = @"有一处修改位于文件末尾之后";
+            if (errorText) *errorText = WQLocalized(@"有一处修改位于文件末尾之后");
             wq_mutation_close(&mutation); return NO;
         }
     }
@@ -1059,7 +1059,7 @@ BOOL wq_backup_unit_deletable(NSString *path)
 BOOL wq_delete_backup(NSString *path, NSString **errorText)
 {
     if (!wq_backup_unit_deletable(path)) {
-        if (errorText) *errorText = @"此处只能删除完整的备份单元。";
+        if (errorText) *errorText = WQLocalized(@"此处只能删除完整的备份单元。");
         return NO;
     }
     NSString *canonical = WQCanonicalVarPath(path);
@@ -1077,7 +1077,7 @@ BOOL wq_delete_backup(NSString *path, NSString **errorText)
     if (S_ISDIR(st.st_mode)) {
         unsigned long long ignored = 0;
         if (!wq_purge_contents_cancellable(canonical, &ignored, nil)) {
-            if (errorText) *errorText = @"无法删除备份中的全部内容。";
+            if (errorText) *errorText = WQLocalized(@"无法删除备份中的全部内容。");
             close(parent);
             return NO;
         }
@@ -1107,11 +1107,11 @@ static int wq_open_directory(NSString *path)
 BOOL wq_create_file(NSString *path, NSData *data, NSString **errorText)
 {
     if (wq_is_backup_storage_path(path)) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器修改。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器修改。");
         return NO;
     }
     if (!WQAbsolutePathGrammar(WQCanonicalVarPath(path))) {
-        if (errorText) *errorText = @"无效的文件路径";
+        if (errorText) *errorText = WQLocalized(@"无效的文件路径");
         return NO;
     }
     NSString *parentPath = path.stringByDeletingLastPathComponent;
@@ -1140,11 +1140,11 @@ BOOL wq_create_file(NSString *path, NSData *data, NSString **errorText)
 BOOL wq_create_dir(NSString *path, NSString **errorText)
 {
     if (wq_is_backup_storage_path(path)) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器修改。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器修改。");
         return NO;
     }
     if (!WQAbsolutePathGrammar(WQCanonicalVarPath(path))) {
-        if (errorText) *errorText = @"无效的文件夹路径";
+        if (errorText) *errorText = WQLocalized(@"无效的文件夹路径");
         return NO;
     }
     NSString *parentPath = path.stringByDeletingLastPathComponent;
@@ -1165,11 +1165,11 @@ BOOL wq_create_dir(NSString *path, NSString **errorText)
 BOOL wq_delete(NSString *path, NSString **errorText)
 {
     if (wq_is_backup_storage_path(path)) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器覆盖或删除。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器覆盖或删除。");
         return NO;
     }
     if (!WQAbsolutePathGrammar(WQCanonicalVarPath(path))) {
-        if (errorText) *errorText = @"无效的文件路径";
+        if (errorText) *errorText = WQLocalized(@"无效的文件路径");
         return NO;
     }
     NSString *parentPath = path.stringByDeletingLastPathComponent;
@@ -1180,7 +1180,7 @@ BOOL wq_delete(NSString *path, NSString **errorText)
     if (fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) != 0 &&
         !(wq_is_denied(errno) && wq_grant(parentPath) &&
           fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) == 0)) {
-        if (errorText) *errorText = errno == ENOENT ? @"未找到" : wq_errno(errno);
+        if (errorText) *errorText = errno == ENOENT ? WQLocalized(@"未找到") : wq_errno(errno);
         close(parent);
         return NO;
     }
@@ -1204,7 +1204,7 @@ BOOL wq_delete(NSString *path, NSString **errorText)
     int err = errno;
     close(parent);
     wq_log(@"delete: %@ -> %@", path, rc == 0 ? @"好" : wq_errno(err));
-    if (rc != 0 && errorText) *errorText = err == ENOTEMPTY ? @"只能删除空文件夹" : wq_errno(err);
+    if (rc != 0 && errorText) *errorText = err == ENOTEMPTY ? WQLocalized(@"只能删除空文件夹") : wq_errno(err);
     return rc == 0;
 }
 
@@ -1212,12 +1212,12 @@ BOOL wq_rename(NSString *path, NSString *newName, NSString **errorText)
 {
     if (!WQAbsolutePathGrammar(WQCanonicalVarPath(path)) || newName.length == 0 || [newName containsString:@"/"] ||
         [newName isEqualToString:@"."] || [newName isEqualToString:@".."] || [newName rangeOfString:@"\0"].location != NSNotFound) {
-        if (errorText) *errorText = @"无效的名称";
+        if (errorText) *errorText = WQLocalized(@"无效的名称");
         return NO;
     }
     if (wq_is_backup_storage_path(path) ||
         wq_is_backup_storage_path([path.stringByDeletingLastPathComponent stringByAppendingPathComponent:newName])) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器重命名。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器重命名。");
         return NO;
     }
     NSString *parentPath = path.stringByDeletingLastPathComponent;
@@ -1230,7 +1230,7 @@ BOOL wq_rename(NSString *path, NSString *newName, NSString **errorText)
     int err = errno;
     close(parent);
     wq_log(@"rename: %@ -> %@: %@", path, newName, rc == 0 ? @"好" : wq_errno(err));
-    if (rc != 0 && errorText) *errorText = err == EEXIST ? @"已存在同名项目" : wq_errno(err);
+    if (rc != 0 && errorText) *errorText = err == EEXIST ? WQLocalized(@"已存在同名项目") : wq_errno(err);
     return rc == 0;
 }
 
@@ -1239,20 +1239,20 @@ BOOL wq_move(NSString *path, NSString *destDir, NSString **errorText)
     NSString *source = WQCanonicalVarPath(path), *target = WQCanonicalVarPath(destDir);
     NSString *name = source.lastPathComponent;
     if (!WQAbsolutePathGrammar(source) || !WQAbsolutePathGrammar(target) || !name.length) {
-        if (errorText) *errorText = @"无效的路径";
+        if (errorText) *errorText = WQLocalized(@"无效的路径");
         return NO;
     }
     NSString *sourceParent = source.stringByDeletingLastPathComponent;
     if ([sourceParent isEqualToString:target]) {
-        if (errorText) *errorText = @"它已经在此文件夹中";
+        if (errorText) *errorText = WQLocalized(@"它已经在此文件夹中");
         return NO;
     }
     if ([target isEqualToString:source] || [target hasPrefix:[source stringByAppendingString:@"/"]]) {
-        if (errorText) *errorText = @"文件夹不能移动到自身内部";
+        if (errorText) *errorText = WQLocalized(@"文件夹不能移动到自身内部");
         return NO;
     }
     if (wq_is_backup_storage_path(source) || wq_is_backup_storage_path([target stringByAppendingPathComponent:name])) {
-        if (errorText) *errorText = @"备份存储不能通过文件浏览器更改。";
+        if (errorText) *errorText = WQLocalized(@"备份存储不能通过文件浏览器更改。");
         return NO;
     }
     int from = wq_open_directory_flags(sourceParent, O_SEARCH);
@@ -1274,8 +1274,8 @@ BOOL wq_move(NSString *path, NSString *destDir, NSString **errorText)
     close(to);
     wq_log(@"move: %@ -> %@: %@", path, destDir, rc == 0 ? @"好" : wq_errno(err));
     if (rc != 0 && errorText) {
-        *errorText = err == EEXIST ? [NSString stringWithFormat:@"此处已有名为「%@」的项目", name]
-                   : err == EXDEV ? @"项目不能移动到其他卷"
+        *errorText = err == EEXIST ? WQLocalizedFormat(@"此处已有名为「%@」的项目", name)
+                   : err == EXDEV ? WQLocalized(@"项目不能移动到其他卷")
                    : wq_errno(err);
     }
     return rc == 0;
@@ -1948,7 +1948,7 @@ inodeScan:;
     }
     WQScanCancellation *stop = nil;
     if (!cache) {
-        stop = wq_full_scan_begin(inodeOnly ? @"内部守护进程" : @"the app folders", maxInode,
+        stop = wq_full_scan_begin(inodeOnly ? WQLocalized(@"内部守护进程") : WQLocalized(@"the app folders"), maxInode,
                                   wq_full_scan_estimate(maxInode, sampleRate));
         if (!stop) return nil;
         qos = QOS_CLASS_USER_INITIATED;
@@ -2389,7 +2389,7 @@ BOOL wq_copy_contents(NSString *srcDir, NSString *dstDir, NSString **errorText)
     dstDir = WQCanonicalVarPath(dstDir);
     if (!WQAbsolutePathGrammar(srcDir) || !WQAbsolutePathGrammar(dstDir) || [srcDir isEqual:dstDir] ||
         [srcDir hasPrefix:[dstDir stringByAppendingString:@"/"]] || [dstDir hasPrefix:[srcDir stringByAppendingString:@"/"]]) {
-        if (errorText) *errorText = @"源与目标的目录树重叠或路径无效";
+        if (errorText) *errorText = WQLocalized(@"源与目标的目录树重叠或路径无效");
         return NO;
     }
     NSFileManager *fm = NSFileManager.defaultManager;
@@ -2400,20 +2400,20 @@ BOOL wq_copy_contents(NSString *srcDir, NSString *dstDir, NSString **errorText)
         destination = WQCreateDirectoriesNoLinksMode(dstDir, 0755);
     struct stat srcStat, dstStat;
     if (destination < 0 || fstat(source, &srcStat) != 0 || fstat(destination, &dstStat) != 0 || WQSameObject(&srcStat, &dstStat)) {
-        if (errorText) *errorText = @"无法安全地打开相互独立的源与目标文件夹";
+        if (errorText) *errorText = WQLocalized(@"无法安全地打开相互独立的源与目标文件夹");
         close(source); if (destination >= 0) close(destination); return NO;
     }
     NSError *error = nil;
     NSArray *children = [fm contentsOfDirectoryAtPath:srcDir error:&error];
     if (!children) {
-        if (errorText) *errorText = error.localizedDescription ?: @"无法读取源文件夹";
+        if (errorText) *errorText = error.localizedDescription ?: WQLocalized(@"无法读取源文件夹");
         close(source); close(destination); return NO;
     }
     BOOL allOk = YES;
     NSString *firstFailure = nil;
     for (NSString *name in children) {
         if (!wq_directory_current(srcDir, source) || !wq_directory_current(dstDir, destination)) {
-            allOk = NO; firstFailure = firstFailure ?: @"复制期间某个复制根目录发生了改变"; break;
+            allOk = NO; firstFailure = firstFailure ?: WQLocalized(@"复制期间某个复制根目录发生了改变"); break;
         }
         NSString *src = [srcDir stringByAppendingPathComponent:name];
         NSString *dst = [dstDir stringByAppendingPathComponent:name];

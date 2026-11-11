@@ -11,14 +11,14 @@ xcrun --sdk macosx clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleC
     -framework Foundation -o "$OUT/WQAccessSafetyTests"
 "$OUT/WQAccessSafetyTests"
 xcrun --sdk macosx clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -isysroot "$SDK" \
-    -Wall -Wextra -Werror -I. tests/WQAccessMutationTests.m WQCore.m \
+    -Wall -Wextra -Werror -I. tests/WQAccessMutationTests.m WQCore.m WQLocalization.m \
     -framework Foundation -o "$OUT/WQAccessMutationTests"
 "$OUT/WQAccessMutationTests"
 xcrun --sdk macosx clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -isysroot "$SDK" \
-    -Wall -Wextra -Werror -I. tests/WQAccessTreeTests.m WQCore.m \
+    -Wall -Wextra -Werror -I. tests/WQAccessTreeTests.m WQCore.m WQLocalization.m \
     -framework Foundation -o "$OUT/WQAccessTreeTests"
 "$OUT/WQAccessTreeTests"
 xcrun --sdk macosx clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -isysroot "$SDK" \
-    -Wall -Wextra -Werror -I. tests/WQAccessCopyTests.m WQCore.m \
+    -Wall -Wextra -Werror -I. tests/WQAccessCopyTests.m WQCore.m WQLocalization.m \
     -framework Foundation -o "$OUT/WQAccessCopyTests"
 "$OUT/WQAccessCopyTests"

@@ -25,6 +25,7 @@
 #import "WQHexViewer.h"
 #import "WQSQLiteViewer.h"
 #import "WQArchive.h"
+#import "WQSyntax.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <sys/mount.h>
@@ -58,10 +59,24 @@ static BOOL wq_regular_file_for_ui(NSString *path)
 @property (nonatomic) uid_t uid;
 @property (nonatomic, strong) NSDate *modified;
 @property (nonatomic, strong) NSDate *created;
+@property (nonatomic) NSInteger childCount;   // folders, with Show Item Counts on; -1 unknown
 @end
 
 @implementation WQItem
+- (instancetype)init
+{
+    if ((self = [super init])) _childCount = -1;
+    return self;
+}
 @end
+
+// Settings → Show Item Counts (off by default): lists every subfolder, which
+// is slow in other apps' containers.
+static NSString *const kWQShowItemCountsPref = @"WQShowItemCounts";
+static BOOL wq_show_item_counts(void)
+{
+    return [NSUserDefaults.standardUserDefaults boolForKey:kWQShowItemCountsPref];
+}
 
 #pragma mark - File viewer
 
@@ -125,6 +140,65 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     BOOL _truncated;
     WQEditState *_editState;
     NSDictionary<NSString *, NSNumber *> *_version;
+    NSString *_syntaxLanguage;
+    NSUInteger _syntaxGeneration;
+}
+
+static UIColor *wq_syntax_color(WQSyntaxKind kind)
+{
+    switch (kind) {
+        case WQSyntaxComment: return UIColor.systemGrayColor;
+        case WQSyntaxString: return UIColor.systemRedColor;
+        case WQSyntaxKey: return UIColor.systemTealColor;
+        case WQSyntaxKeyword: return UIColor.systemPinkColor;
+        case WQSyntaxNumber: return UIColor.systemPurpleColor;
+        case WQSyntaxTag: return UIColor.systemBlueColor;
+        case WQSyntaxAttribute: return UIColor.systemOrangeColor;
+        case WQSyntaxPreprocessor: return UIColor.systemBrownColor;
+    }
+    return UIColor.labelColor;
+}
+
+// Colors the text in the background; edits recolor after a short pause.
+- (void)highlightAfter:(NSTimeInterval)delay
+{
+    NSString *language = _syntaxLanguage;
+    if (!language) return;
+    NSUInteger generation = ++_syntaxGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        WQFileViewController *strongSelf = weakSelf;
+        if (!strongSelf || generation != strongSelf->_syntaxGeneration) return;
+        NSString *text = [strongSelf->_textView.text copy];
+        if (text.length > kWQSyntaxMaxLength) return;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSData *tokens = wq_syntax_tokens(text, language, ^BOOL {
+                WQFileViewController *s = weakSelf;
+                return !s || generation != s->_syntaxGeneration;
+            });
+            if (!tokens) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WQFileViewController *s = weakSelf;
+                if (!s || generation != s->_syntaxGeneration) return;
+                UITextView *view = s->_textView;
+                // Not while the keyboard is composing (marked text), or if the text moved on.
+                if (view.markedTextRange) { [s highlightAfter:0.5]; return; }
+                if (![view.text isEqualToString:text]) return;
+                NSTextStorage *storage = view.textStorage;
+                NSRange all = NSMakeRange(0, storage.length);
+                [storage beginEditing];
+                [storage addAttribute:NSForegroundColorAttributeName value:UIColor.labelColor range:all];
+                const WQSyntaxToken *t = tokens.bytes;
+                for (NSUInteger i = 0; i < tokens.length / sizeof(WQSyntaxToken); i++)
+                    if (NSMaxRange(t[i].range) <= storage.length)
+                        [storage addAttribute:NSForegroundColorAttributeName value:wq_syntax_color(t[i].kind) range:t[i].range];
+                [storage endEditing];
+                NSMutableDictionary *typing = [view.typingAttributes mutableCopy];
+                typing[NSForegroundColorAttributeName] = UIColor.labelColor;
+                view.typingAttributes = typing;
+            });
+        });
+    });
 }
 
 
@@ -171,19 +245,19 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     }
     UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                                                                            target:self action:@selector(share:)];
-    UIMenu *openAs = [UIMenu menuWithTitle:@"打开方式" children:@[
-        [UIAction actionWithTitle:@"属性列表编辑器" image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
+    UIMenu *openAs = [UIMenu menuWithTitle:WQLocalizedNullable(@"打开方式") children:@[
+        [UIAction actionWithTitle:WQLocalizedNullable(@"属性列表编辑器") image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenPlist]; }],
-        [UIAction actionWithTitle:@"十六进制查看器" image:[UIImage systemImageNamed:@"number"] identifier:nil
+        [UIAction actionWithTitle:WQLocalizedNullable(@"十六进制查看器") image:[UIImage systemImageNamed:@"number"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenHex]; }],
-        [UIAction actionWithTitle:@"SQLite 查看器" image:[UIImage systemImageNamed:@"tablecells"] identifier:nil
+        [UIAction actionWithTitle:WQLocalizedNullable(@"SQLite 查看器") image:[UIImage systemImageNamed:@"tablecells"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenSQLite]; }],
-        [UIAction actionWithTitle:@"媒体播放器" image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
+        [UIAction actionWithTitle:WQLocalizedNullable(@"媒体播放器") image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenMedia]; }],
     ]];
     UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:openAs];
     self.navigationItem.rightBarButtonItems = @[share, more];
-    _textView.text = @"加载中…";
+    _textView.text = WQLocalizedNullable(@"加载中…");
     [self load];
 }
 
@@ -234,7 +308,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
             self->_version = version;
             if (!display) {
                 NSString *hint = wq_permission_hint(path, NO);
-                self->_textView.text = [NSString stringWithFormat:@"Cannot read this file.\n\n%@", hint ?: error];
+                self->_textView.text = WQLocalizedFormat(@"Cannot read this file.\n\n%@", hint ?: error);
                 return;
             }
             NSString *info = exists
@@ -255,10 +329,12 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
         _kind = WQViewPlist;
         _plistFormat = display.plistFormat;
         _textView.text = display.plistText;
+        _syntaxLanguage = @"xml";
+        [self highlightAfter:0];
         if (!WQPlistFormatIsWritable(display.plistFormat)) {
             _readOnly = YES;
             NSString *prompt = self.navigationItem.prompt;
-            NSString *reason = [NSString stringWithFormat:@"%@ · 只读", WQPlistFormatName(display.plistFormat)];
+            NSString *reason = WQLocalizedFormat(@"%@ · 只读", WQLocalized(WQPlistFormatName(display.plistFormat)));
             self.navigationItem.prompt = prompt.length ? [prompt stringByAppendingFormat:@" · %@", reason] : reason;
         }
         if (!_readOnly) [self enableEditing];
@@ -274,6 +350,8 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     if (display.text) {
         _kind = WQViewText;
         _textView.text = display.text;
+        _syntaxLanguage = _truncated ? nil : wq_syntax_language(_path.lastPathComponent, display.text);
+        [self highlightAfter:0];
         if (!_truncated && !_readOnly) [self enableEditing];
         return;
     }
@@ -283,7 +361,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 
 - (void)updateEditButton
 {
-    _editButton.title = _textView.editable ? @"保存" : @"编辑";
+    _editButton.title = _textView.editable ? WQLocalized(@"保存") : WQLocalized(@"编辑");
     _editButton.style = _textView.editable ? wq_primary_button_style() : UIBarButtonItemStylePlain;
     _editButton.enabled = !_editState.saving;
 }
@@ -291,7 +369,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 - (void)enableEditing
 {
     if (_editButton) return;
-    _editButton = [[UIBarButtonItem alloc] initWithTitle:@"编辑" style:UIBarButtonItemStylePlain
+    _editButton = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"编辑") style:UIBarButtonItemStylePlain
                                                   target:self action:@selector(toggleEdit:)];
     NSArray *items = self.navigationItem.rightBarButtonItems;
     self.navigationItem.rightBarButtonItems = [items arrayByAddingObject:_editButton];
@@ -301,6 +379,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 {
     if (_editState.saving) return;
     [_editState noteChange];
+    [self highlightAfter:0.4];
 }
 
 - (BOOL)blockWhileSaving
@@ -319,16 +398,15 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 {
     if ([self blockWhileSaving]) return;
     if (!_editState.dirty) { proceed(); return; }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"放弃更改？"
-        message:@"文本更改尚未保存。" preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"放弃" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+    UIAlertController *alert = wq_alert_controller(@"放弃更改？", @"文本更改尚未保存。", UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"继续编辑", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"放弃", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         [self->_editState discard];
         self->_textView.editable = NO;
         [self->_textView resignFirstResponder];
         [self updateEditButton];
         proceed();
-    }]];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -377,11 +455,10 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
         wq_alert(self, @"无法编码", @"文本无法编码为 UTF-8。");
         return;
     }
-    NSString *message = [NSString stringWithFormat:@"%@ 将被就地覆盖，当前版本会先备份到「备份」中。", _path];
-    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"保存更改？" message:message
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [confirm addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+    NSString *message = WQLocalizedFormat(@"%@ 将被就地覆盖，当前版本会先备份到「备份」中。", _path);
+    UIAlertController *confirm = wq_alert_controller(@"保存更改？", message, UIAlertControllerStyleAlert);
+    [confirm addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [confirm addAction:wq_alert_action(@"保存", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         NSUInteger savedRevision = [self->_editState beginSave];
         self->_textView.editable = NO;
         [self->_textView resignFirstResponder];
@@ -400,7 +477,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
                 if (!ok) wq_alert(self, @"保存失败", error ?: wq_permission_hint(path, YES) ?: @"未知错误");
             });
         });
-    }]];
+    })];
     [self presentViewController:confirm animated:YES completion:nil];
 }
 
@@ -463,8 +540,7 @@ static BOOL wq_is_media_name(NSString *name)
 static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^stillWanted)(void))
 {
     UIViewController *host = nav.topViewController;
-    UIAlertController *hud = [UIAlertController alertControllerWithTitle:@"准备中…" message:path.lastPathComponent
-                                                          preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *hud = wq_alert_controller(@"准备中…", path.lastPathComponent, UIAlertControllerStyleAlert);
     [host presentViewController:hud animated:YES completion:nil];
     dispatch_async(wq_io(), ^{
         NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"wq-media"];
@@ -595,9 +671,9 @@ static void wq_choose_sort(WQSortKey key)
 static NSString *wq_sort_direction_text(WQSortKey key, BOOL ascending)
 {
     switch (key) {
-        case WQSortName: return ascending ? @"A–Z" : @"Z–A";
-        case WQSortSize: return ascending ? @"最小的在前" : @"最大的在前";
-        default: return ascending ? @"最早的在前" : @"最新的在前";
+        case WQSortName: return ascending ? WQLocalized(@"A–Z") : WQLocalized(@"Z–A");
+        case WQSortSize: return ascending ? WQLocalized(@"最小的在前") : WQLocalized(@"最大的在前");
+        default: return ascending ? WQLocalized(@"最早的在前") : WQLocalized(@"最新的在前");
     }
 }
 
@@ -728,14 +804,14 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *path = _path;
     NSMutableArray<UIMenuElement *> *menuItems = [NSMutableArray new];
     if (!self.readOnly && !_backupStorage) {
-        [menuItems addObject:[UIAction actionWithTitle:@"新建文件夹" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"新建文件夹") image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf promptNewFolder]; }]];
-        [menuItems addObject:[UIAction actionWithTitle:@"导入文件" image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"导入文件") image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf importFile]; }]];
-        [menuItems addObject:[UIAction actionWithTitle:@"导入文件夹" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"导入文件夹") image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf importFolder]; }]];
     }
-    [menuItems addObject:[UIAction actionWithTitle:@"拷贝路径" image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
+    [menuItems addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"拷贝路径") image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
                           handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = path; }]];
     // Built when the menu opens, so the checkmarks show the current order.
     [menuItems addObject:[UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
@@ -744,7 +820,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         NSMutableArray *sortActions = [NSMutableArray new];
         NSArray *titles = @[@"名称", @"修改日期", @"创建日期", @"大小"];
         for (NSInteger key = WQSortName; key <= WQSortSize; key++) {
-            UIAction *action = [UIAction actionWithTitle:titles[(NSUInteger)key] image:nil identifier:nil handler:^(UIAction *__unused a) {
+            UIAction *action = [UIAction actionWithTitle:WQLocalizedNullable(titles[(NSUInteger)key]) image:nil identifier:nil handler:^(UIAction *__unused a) {
                 wq_choose_sort((WQSortKey)key);
                 [weakSelf resortAfterChange];
             }];
@@ -754,25 +830,25 @@ static NSString *wq_temp_work_dir(NSString *prefix)
             }
             [sortActions addObject:action];
         }
-        UIAction *folders = [UIAction actionWithTitle:@"文件夹置顶" image:nil identifier:nil handler:^(UIAction *__unused a) {
+        UIAction *folders = [UIAction actionWithTitle:WQLocalizedNullable(@"文件夹置顶") image:nil identifier:nil handler:^(UIAction *__unused a) {
             [NSUserDefaults.standardUserDefaults setBool:!wq_folders_first() forKey:kWQFoldersFirstPref];
             [weakSelf resortAfterChange];
         }];
         folders.state = wq_folders_first() ? UIMenuElementStateOn : UIMenuElementStateOff;
         UIMenu *order = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[folders]];
-        UIMenu *sort = [UIMenu menuWithTitle:@"排序方式" image:[UIImage systemImageNamed:@"arrow.up.arrow.down"] identifier:nil options:0
+        UIMenu *sort = [UIMenu menuWithTitle:WQLocalizedNullable(@"排序方式") image:[UIImage systemImageNamed:@"arrow.up.arrow.down"] identifier:nil options:0
                                     children:[sortActions arrayByAddingObject:order]];
-        sort.subtitle = [NSString stringWithFormat:@"%@, %@", titles[(NSUInteger)current], wq_sort_direction_text(current, ascending)];
+        sort.subtitle = WQLocalizedFormat(@"%@, %@", WQLocalizedNullable(titles[(NSUInteger)current]), wq_sort_direction_text(current, ascending));
         completion(@[sort]);
     }]];
     _menuItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                                                  menu:[UIMenu menuWithChildren:menuItems]];
     if (_backupStorage) {
-        _selectItem = [[UIBarButtonItem alloc] initWithTitle:@"选择" style:UIBarButtonItemStylePlain
+        _selectItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"选择") style:UIBarButtonItemStylePlain
                                                        target:self action:@selector(enterBackupSelection)];
         _selectItem.enabled = NO;
     } else if ([self canEditHere]) {
-        _fileSelectItem = [[UIBarButtonItem alloc] initWithTitle:@"选择" style:UIBarButtonItemStylePlain
+        _fileSelectItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"选择") style:UIBarButtonItemStylePlain
                                                            target:self action:@selector(enterFileSelection)];
     }
     [self restoreRightItems];
@@ -783,7 +859,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
     search.obscuresBackgroundDuringPresentation = NO;
-    search.searchBar.placeholder = _labels ? @"搜索名称和 Bundle ID" : @"搜索此文件夹";
+    search.searchBar.placeholder = _labels ? WQLocalized(@"搜索名称和 Bundle ID") : WQLocalized(@"搜索此文件夹");
     search.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
     search.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
     self.navigationItem.searchController = search;
@@ -863,10 +939,10 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 - (void)copyPath
 {
     UIPasteboard.generalPasteboard.string = _path;
-    _scanStatus = @"已拷贝路径";
+    _scanStatus = WQLocalized(@"已拷贝路径");
     [self updateHeader];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if ([self->_scanStatus isEqualToString:@"已拷贝路径"]) { self->_scanStatus = nil; [self updateHeader]; }
+        if ([self->_scanStatus isEqualToString:WQLocalized(@"已拷贝路径")]) { self->_scanStatus = nil; [self updateHeader]; }
     });
 }
 
@@ -956,19 +1032,19 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     _selectingBackups = YES;
     [_selectedBackups removeAllObjects];
     if (!_doneItem) {
-        _doneItem = [[UIBarButtonItem alloc] initWithTitle:@"完成" style:UIBarButtonItemStyleProminent
+        _doneItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"完成") style:UIBarButtonItemStyleProminent
                                                        target:self action:@selector(exitBackupSelection)];
-        _deleteItem = [[UIBarButtonItem alloc] initWithTitle:@"删除" style:UIBarButtonItemStylePlain
+        _deleteItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"删除") style:UIBarButtonItemStylePlain
                                                        target:self action:@selector(deleteSelectedBackups)];
         _deleteItem.tintColor = UIColor.systemRedColor;
         _allItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle"]
                                                      style:UIBarButtonItemStylePlain
                                                     target:self action:@selector(selectAllBackups)];
-        _allItem.accessibilityLabel = @"全选";
+        _allItem.accessibilityLabel = WQLocalizedNullable(@"全选");
     }
     self.refreshControl.enabled = NO;
     self.tableView.allowsMultipleSelection = YES;
-    self.title = @"选择备份";
+    self.title = WQLocalizedNullable(@"选择备份");
     self.navigationItem.rightBarButtonItems = @[_allItem, _deleteItem, _doneItem];
     [self updateBackupSelectionBar];
     [self.tableView reloadData];
@@ -997,17 +1073,17 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 
 - (void)deleteSelectedBackups
 {
+    if (wq_refuse_if_deleting_off(self)) return;
     NSArray<NSString *> *paths = [_selectedBackups.allObjects sortedArrayUsingSelector:@selector(compare:)];
     if (paths.count == 0) return;
-    NSString *message = [NSString stringWithFormat:
-        @"这将永久删除 %lu 个完整备份%@ 及其中的全部内容，且无法撤销。",
-        (unsigned long)paths.count, paths.count == 1 ? @"" : @"s"];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除备份？"
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive
-                                              handler:^(UIAlertAction *__unused a) {
+    NSString *message = paths.count == 1
+        ? WQLocalizedFormat(@"This permanently removes %lu complete backup and everything inside it. It cannot be undone.",
+                            (unsigned long)paths.count)
+        : WQLocalizedFormat(@"This permanently removes %lu complete backups and everything inside them. It cannot be undone.",
+                            (unsigned long)paths.count);
+    UIAlertController *alert = wq_alert_controller(@"删除备份？", message, UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"删除", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         [self exitBackupSelection];
         [self runIO:^BOOL(NSString **error) {
             NSString *first = nil;
@@ -1021,8 +1097,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                 return NO;
             }
             return YES;
-        } failure:@"无法删除备份"];
-    }]];
+        } failure:WQLocalizedNullable(@"无法删除备份")];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -1063,31 +1139,31 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
     if (_selectingFiles) {
         BOOL any = _selectedFiles.count > 0;
-        UIBarButtonItem *move = [[UIBarButtonItem alloc] initWithTitle:@"移动" style:UIBarButtonItemStylePlain
+        UIBarButtonItem *move = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"移动") style:UIBarButtonItemStylePlain
                                                                 target:self action:@selector(moveSelectedFiles)];
-        UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:@"压缩" style:UIBarButtonItemStylePlain
+        UIBarButtonItem *zip = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"压缩") style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(compressSelectedFiles)];
-        UIBarButtonItem *del = [[UIBarButtonItem alloc] initWithTitle:@"删除" style:UIBarButtonItemStylePlain
+        UIBarButtonItem *del = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"删除") style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(deleteSelectedFiles)];
         del.tintColor = UIColor.systemRedColor;
         move.enabled = zip.enabled = del.enabled = any;
-        self.toolbarItems = @[move, flex, zip, flex, del];
+        self.toolbarItems = wq_deleting_allowed() ? @[move, flex, zip, flex, del] : @[move, flex, zip];
     } else if (gWQMovePaths.count) {
-        UIBarButtonItem *cancel = [[UIBarButtonItem alloc] initWithTitle:@"取消" style:UIBarButtonItemStylePlain
+        UIBarButtonItem *cancel = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"取消") style:UIBarButtonItemStylePlain
                                                                   target:self action:@selector(cancelMove)];
         UILabel *label = [UILabel new];
         label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
         label.textColor = UIColor.secondaryLabelColor;
         label.text = gWQMovePaths.count == 1
-            ? [NSString stringWithFormat:@"正在移动「%@」", gWQMovePaths.firstObject.lastPathComponent]
-            : [NSString stringWithFormat:@"正在移动 %lu 个项目", (unsigned long)gWQMovePaths.count];
+            ? WQLocalizedFormat(@"正在移动「%@」", gWQMovePaths.firstObject.lastPathComponent)
+            : WQLocalizedFormat(@"正在移动 %lu 个项目", (unsigned long)gWQMovePaths.count);
         label.lineBreakMode = NSLineBreakByTruncatingMiddle;
         [label sizeToFit];
         CGRect frame = label.frame;
         frame.size.width = MIN(frame.size.width, 180);
         label.frame = frame;
         UIBarButtonItem *info = [[UIBarButtonItem alloc] initWithCustomView:label];
-        UIBarButtonItem *here = [[UIBarButtonItem alloc] initWithTitle:@"移动到此" style:UIBarButtonItemStyleProminent
+        UIBarButtonItem *here = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"移动到此") style:UIBarButtonItemStyleProminent
                                                                 target:self action:@selector(moveHere)];
         here.enabled = [self canMoveHere];
         self.toolbarItems = @[cancel, flex, info, flex, here];
@@ -1101,7 +1177,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 - (void)updateFileSelectionTitle
 {
     self.title = _selectedFiles.count
-        ? [NSString stringWithFormat:@"已选 %lu 项", (unsigned long)_selectedFiles.count] : @"选择项目";
+        ? WQLocalizedFormat(@"已选 %lu 项", (unsigned long)_selectedFiles.count) : WQLocalized(@"选择项目");
     _fileAllItem.enabled = _selectedFiles.count < _items.count;
     [self updateToolbar];
 }
@@ -1112,12 +1188,12 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     _selectingFiles = YES;
     [_selectedFiles removeAllObjects];
     if (!_fileDoneItem) {
-        _fileDoneItem = [[UIBarButtonItem alloc] initWithTitle:@"完成" style:UIBarButtonItemStyleProminent
+        _fileDoneItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"完成") style:UIBarButtonItemStyleProminent
                                                         target:self action:@selector(exitFileSelection)];
         _fileAllItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle"]
                                                          style:UIBarButtonItemStylePlain
                                                         target:self action:@selector(selectAllFiles)];
-        _fileAllItem.accessibilityLabel = @"全选";
+        _fileAllItem.accessibilityLabel = WQLocalizedNullable(@"全选");
     }
     self.refreshControl.enabled = NO;
     self.navigationItem.rightBarButtonItems = @[_fileDoneItem, _fileAllItem];
@@ -1162,7 +1238,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 - (void)startMove:(NSArray<NSString *> *)paths
 {
     wq_set_move_paths(paths);
-    wq_alert(self, paths.count == 1 ? @"移动" : [NSString stringWithFormat:@"移动 %lu 个项目", (unsigned long)paths.count],
+    wq_alert(self, paths.count == 1 ? WQLocalized(@"移动") : WQLocalizedFormat(@"移动 %lu 个项目", (unsigned long)paths.count),
              @"打开要移动到的目标文件夹，然后点击底部的「移动到此」。任何 App 的文件夹都可以。");
 }
 
@@ -1192,20 +1268,19 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                 : [NSString stringWithFormat:@"%lu of %lu items weren't moved.\n\n%@", (unsigned long)failed, (unsigned long)paths.count, first];
         }
         return failed == 0;
-    } failure:@"无法移动"];
+    } failure:WQLocalizedNullable(@"无法移动")];
 }
 
 - (void)deleteSelectedFiles
 {
+    if (wq_refuse_if_deleting_off(self)) return;
     NSArray<NSString *> *paths = [self selectedFilePaths];
     if (!paths.count) return;
-    NSString *title = paths.count == 1 ? [NSString stringWithFormat:@"删除「%@」？", paths.firstObject.lastPathComponent]
-                                       : [NSString stringWithFormat:@"删除 %lu 个项目？", (unsigned long)paths.count];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-        message:@"文件会先复制到「备份」，文件夹只有在为空时才能删除。"
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+    NSString *title = paths.count == 1 ? WQLocalizedFormat(@"删除「%@」？", paths.firstObject.lastPathComponent)
+                                       : WQLocalizedFormat(@"删除 %lu 个项目？", (unsigned long)paths.count);
+    UIAlertController *alert = wq_alert_controller(title, @"文件会先复制到「备份」，文件夹只有在为空时才能删除。", UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"删除", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         [self exitFileSelection];
         [self runIO:^BOOL(NSString **error) {
             NSUInteger failed = 0;
@@ -1222,8 +1297,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                     : [NSString stringWithFormat:@"%lu of %lu items weren't deleted.\n\n%@", (unsigned long)failed, (unsigned long)paths.count, first];
             }
             return failed == 0;
-        } failure:@"无法删除"];
-    }]];
+        } failure:WQLocalizedNullable(@"无法删除")];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -1245,10 +1320,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                  work:(BOOL (^)(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note))work
 {
     WQScanCancellation *cancellation = [WQScanCancellation new];
-    UIAlertController *hud = [UIAlertController alertControllerWithTitle:title message:@"正在开始…"
-                                                          preferredStyle:UIAlertControllerStyleAlert];
-    [hud addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel
-                                          handler:^(UIAlertAction *__unused a) { [cancellation cancel]; }]];
+    UIAlertController *hud = wq_alert_controller(title, @"正在开始…", UIAlertControllerStyleAlert);
+    [hud addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) { [cancellation cancel]; })];
     [self presentViewController:hud animated:YES completion:nil];
     __block CFAbsoluteTime lastUpdate = 0;
     WQArchiveProgress progress = ^(unsigned long long bytes) {
@@ -1288,7 +1361,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *base = paths.count == 1 ? paths.firstObject.lastPathComponent : @"Archive";
     NSString *zipName = [self unusedName:base extension:@"zip"];
     NSString *dest = [_path stringByAppendingPathComponent:zipName];
-    [self runArchiveJob:@"正在压缩" failure:@"无法压缩"
+    [self runArchiveJob:WQLocalized(@"正在压缩") failure:WQLocalizedNullable(@"无法压缩")
                    work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note) {
         NSString *work = wq_temp_work_dir(@"wq-zip");
         if (!work) { *error = @"无法创建临时文件夹"; return NO; }
@@ -1300,8 +1373,11 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         [NSFileManager.defaultManager removeItemAtPath:work error:nil];
         wq_log(@"compress: %lu item(s) -> %@: %@", (unsigned long)paths.count, dest, ok ? @"好" : *error);
         if (ok && skipped)
-            *note = [NSString stringWithFormat:@"已创建 %@。已跳过 %lu 个符号链接%@ 或特殊文件%@。",
-                     zipName, (unsigned long)skipped, skipped == 1 ? @"" : @"s", skipped == 1 ? @"" : @"s"];
+            *note = skipped == 1
+                ? WQLocalizedFormat(@"Created %@. %lu symbolic link or special file was left out.",
+                                    zipName, (unsigned long)skipped)
+                : WQLocalizedFormat(@"Created %@. %lu symbolic links or special files were left out.",
+                                    zipName, (unsigned long)skipped);
         return ok;
     }];
 }
@@ -1311,7 +1387,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *base = zipPath.lastPathComponent.stringByDeletingPathExtension;
     NSString *folder = [self unusedName:base.length ? base : @"Archive" extension:nil];
     NSString *dest = [_path stringByAppendingPathComponent:folder];
-    [self runArchiveJob:@"正在解压" failure:@"无法解压"
+    [self runArchiveJob:WQLocalized(@"正在解压") failure:WQLocalizedNullable(@"无法解压")
                    work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note) {
         NSString *work = wq_temp_work_dir(@"wq-unzip");
         if (!work) { *error = @"无法创建临时文件夹"; return NO; }
@@ -1329,14 +1405,23 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         if (ok) ok = wq_create_dir(dest, error);
         if (ok && !wq_copy_contents(local, dest, error)) {
             ok = NO;
-            *error = [NSString stringWithFormat:@"%@\n\nSome files may already be in %@.", *error ?: @"复制失败。", folder];
+            *error = WQLocalizedFormat(@"%@\n\nSome files may already be in %@.", *error ?: WQLocalized(@"复制失败。"), folder);
         }
         [NSFileManager.defaultManager removeItemAtPath:work error:nil];
         wq_log(@"extract: %@ -> %@: %@ (%lu files, %lu skipped)", zipPath, dest, ok ? @"好" : *error,
                (unsigned long)files, (unsigned long)skipped);
-        if (ok && skipped)
-            *note = [NSString stringWithFormat:@"已将 %lu 个文件%@ 解压到 %@。ZIP 中的 %lu 个符号链接%@ 已跳过。",
-                     (unsigned long)files, files == 1 ? @"" : @"s", folder, (unsigned long)skipped, skipped == 1 ? @"" : @"s"];
+        if (ok && skipped) {
+            NSString *key;
+            if (files == 1 && skipped == 1)
+                key = @"Extracted %lu file into %@. %lu symbolic link in the ZIP was left out.";
+            else if (files == 1)
+                key = @"Extracted %lu file into %@. %lu symbolic links in the ZIP were left out.";
+            else if (skipped == 1)
+                key = @"Extracted %lu files into %@. %lu symbolic link in the ZIP was left out.";
+            else
+                key = @"Extracted %lu files into %@. %lu symbolic links in the ZIP were left out.";
+            *note = WQLocalizedFormat(key, (unsigned long)files, folder, (unsigned long)skipped);
+        }
         return ok;
     }];
 }
@@ -1379,7 +1464,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         if (!names && enumerable && !cancellation.isCancelled) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                self->_scanStatus = @"正在扫描 inode…";
+                self->_scanStatus = WQLocalized(@"正在扫描 inode…");
                 [self updateHeader];
             });
             CFAbsoluteTime scanStarted = CFAbsoluteTimeGetCurrent();
@@ -1389,13 +1474,12 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                 NSString *left = @"";
                 if (elapsed > 5 && done > 0 && done < total) {
                     double remaining = elapsed * (double)(total - done) / (double)done;
-                    left = remaining >= 90 ? [NSString stringWithFormat:@" · 预计还需 %.0f 分钟", ceil(remaining / 60)]
-                                           : @" · 剩余不到 2 分钟";
+                    left = remaining >= 90 ? WQLocalizedFormat(@" · 预计还需 %.0f 分钟", ceil(remaining / 60))
+                                           : WQLocalized(@" · 剩余不到 2 分钟");
                 }
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                    self->_scanStatus = [NSString stringWithFormat:@"正在扫描 inode… %lld%% · 已找到 %lu 个%@",
-                                         total ? (long long)(done * 100 / total) : 0, (unsigned long)f, left];
+                    self->_scanStatus = WQLocalizedFormat(@"正在扫描 inode… %lld%% · 已找到 %lu 个%@", total ? (long long)(done * 100 / total) : 0, (unsigned long)f, left);
                     [self updateHeader];
                 });
             });
@@ -1429,8 +1513,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                 NSUInteger shown = entryIndex;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                    self->_scanStatus = [NSString stringWithFormat:@"正在读取容器… %lu / %lu",
-                                         (unsigned long)shown, (unsigned long)entryCount];
+                    self->_scanStatus = WQLocalizedFormat(@"正在读取容器… %lu / %lu", (unsigned long)shown, (unsigned long)entryCount);
                     [self updateHeader];
                 });
             }
@@ -1456,7 +1539,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                 NSString *bid = token ? wq_container_label(item.path) : nil;
                 item.bundleID = bid;
                 if (bid) (void)wq_app_icon(bid);   // warm the icon off the main thread
-                item.label = token ? (wq_display_name(bid) ?: bid ?: @"（无标签）") : @"无令牌";
+                item.label = token ? (wq_display_name(bid) ?: bid ?: WQLocalized(@"（无标签）")) : WQLocalized(@"无令牌");
                 if (!token && labelIssues < 3) {
                     wq_log(@"label: no token for %@", item.path);
                     labelIssues++;
@@ -1504,8 +1587,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                     if (bid) { item.bundleID = bid; item.label = wq_display_name(bid) ?: bid; (void)wq_app_icon(bid); }
                 }
                 if ([path isEqualToString:wq_backup_root().stringByDeletingLastPathComponent]) {
-                    if ([name isEqualToString:@"Backups"]) item.label = @"文件备份";
-                    if ([name isEqualToString:@"AppBackups"]) item.label = @"App 备份";
+                    if ([name isEqualToString:@"Backups"]) item.label = WQLocalized(@"文件备份");
+                    if ([name isEqualToString:@"AppBackups"]) item.label = WQLocalized(@"App 备份");
                 }
             }
             [items addObject:item];
@@ -1522,11 +1605,12 @@ static NSString *wq_temp_work_dir(NSString *prefix)
             }
             self->_all = items;
             [self applyFilter];
+            [self countChildrenOf:items generation:generation cancellation:cancellation];
             self->_error = (names || childPaths != nil) ? nil
                 : (error.length ? error
-                   : !wq_app_group() ? @"WQ 文件没有 App Group 权限，无法打开其他 App 的文件夹。请用会保留 App Group 的工具重新签名（参见 README 的签名说明）。"
-                   : wq_full_scan_was_declined() ? @"尚未列出：这需要扫描一次所有文件。下拉即可开始。"
-                   : @"无法列出此文件夹：容器枚举失败，请查看日志。");
+                   : !wq_app_group() ? WQLocalized(@"WQ 文件没有 App Group 权限，无法打开其他 App 的文件夹。请用会保留 App Group 的工具重新签名（参见 README 的签名说明）。")
+                   : wq_full_scan_was_declined() ? WQLocalized(@"尚未列出：这需要扫描一次所有文件。下拉即可开始。")
+                   : WQLocalized(@"无法列出此文件夹：容器枚举失败，请查看日志。"));
             self->_scanStatus = nil;
             self->_lastReloadFinished = NSDate.date.timeIntervalSinceReferenceDate;
             [self.refreshControl endRefreshing];
@@ -1546,6 +1630,40 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     });
 }
 
+// Show Item Counts: list each subfolder in the background after the folder
+// appears; visible rows update as counts arrive. Container lists are left out
+// (hundreds of other apps' folders).
+- (void)countChildrenOf:(NSArray<WQItem *> *)items generation:(NSUInteger)generation
+           cancellation:(WQScanCancellation *)cancellation
+{
+    if (!wq_show_item_counts() || _labels) return;
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("wq.item-counts", DISPATCH_QUEUE_SERIAL); });
+    __weak typeof(self) weakSelf = self;
+    void (^refresh)(void) = ^{
+        WQDirViewController *strongSelf = weakSelf;
+        if (!strongSelf || generation != strongSelf->_scanGeneration || strongSelf->_error) return;
+        NSArray *visible = strongSelf.tableView.indexPathsForVisibleRows;
+        if (visible.count) [strongSelf.tableView reconfigureRowsAtIndexPaths:visible];
+    };
+    dispatch_async(queue, ^{
+        CFAbsoluteTime lastRefresh = CFAbsoluteTimeGetCurrent();
+        for (WQItem *item in items) {
+            if (cancellation.isCancelled || !weakSelf) return;
+            if (!item.isDir || item.isLink) continue;
+            NSArray *names = wq_list(item.path, NULL);
+            NSInteger count = names ? (NSInteger)names.count : -1;
+            dispatch_async(dispatch_get_main_queue(), ^{ item.childCount = count; });
+            if (CFAbsoluteTimeGetCurrent() - lastRefresh > 0.3) {
+                lastRefresh = CFAbsoluteTimeGetCurrent();
+                dispatch_async(dispatch_get_main_queue(), refresh);
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), refresh);
+    });
+}
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     return _error ? 1 : (NSInteger)_items.count;
@@ -1557,11 +1675,10 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"item"];
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
     if (_error) {
-        c.text = @"无法打开此文件夹";
+        c.text = WQLocalizedNullable(@"无法打开此文件夹");
         BOOL container = [_path containsString:@"/Containers/"] || [_path containsString:@"/SystemGroup/"];
         c.secondaryText = container ? _error
-            : [NSString stringWithFormat:@"%@\n\nThis method only opens containers. Use App Data, App Groups, "
-               "Extension Data, Internal Daemons or System Groups for the folders inside /private/var.", _error];
+            : WQLocalizedFormat(@"%@\n\nThis method only opens containers. Use App Data, App Groups, Extension Data, Internal Daemons or System Groups for the folders inside /private/var.", _error);
         c.secondaryTextProperties.numberOfLines = 0;
         c.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
         cell.contentConfiguration = c;
@@ -1572,10 +1689,16 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     c.text = item.label ?: item.name;
     BOOL byCreated = wq_sort_key() == WQSortCreated;
     NSString *date = wq_folder_date_text(byCreated ? item.created : item.modified);
-    if (byCreated) date = [@"created " stringByAppendingString:date];
-    NSString *detail = item.isDir ? date : [NSString stringWithFormat:@"%@ · %@", wq_size_text(item.size), date];
-    if (item.label) detail = [NSString stringWithFormat:@"%@\n%@", item.name, detail];
-    if (item.isLink) detail = [@"符号链接 · " stringByAppendingString:detail];
+    NSString *detail = item.isDir ? date : WQLocalizedFormat(@"%@ · %@", wq_size_text(item.size), date);
+    if (item.isDir && item.childCount >= 0) {
+        NSString *items = item.childCount == 1
+            ? WQLocalizedFormat(@"%ld item", (long)item.childCount)
+            : WQLocalizedFormat(@"%ld items", (long)item.childCount);
+        detail = WQLocalizedFormat(@"%@ · %@", date, items);
+    }
+    // Container lists: the bundle id (issue #27); the folder's UUID is in its path.
+    if (item.label) detail = WQLocalizedFormat(@"%@\n%@", item.bundleID.length ? item.bundleID : item.name, detail);
+    if (item.isLink) detail = [WQLocalized(@"符号链接 · ") stringByAppendingString:detail];
     c.secondaryText = detail;
     c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
     UIImage *appIcon = item.bundleID ? wq_app_icon(item.bundleID) : nil;
@@ -1665,11 +1788,11 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     [self updateBackupSelectionBar];
 }
 
-// Swipe left or right to delete, with the same rules and confirmation as the
+// Swipe left to delete, with the same rules and confirmation as the
 // long-press menu (files are backed up first; backups only as whole units).
 - (UISwipeActionsConfiguration *)deleteSwipeForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    if (_selectingBackups || _selectingFiles || _error) return nil;
+    if (_selectingBackups || _selectingFiles || _error || !wq_deleting_allowed()) return nil;
     if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return nil;
     WQItem *item = _items[(NSUInteger)indexPath.row];
     BOOL backupUnit = item.isDir && wq_backup_unit_deletable(item.path);
@@ -1678,7 +1801,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *itemPath = [item.path copy];
     __weak typeof(self) weakSelf = self;
     UIContextualAction *action = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
-        title:@"删除" handler:^(UIContextualAction *__unused a, UIView *__unused view, void (^done)(BOOL)) {
+        title:WQLocalizedNullable(@"删除") handler:^(UIContextualAction *__unused a, UIView *__unused view, void (^done)(BOOL)) {
         WQDirViewController *strongSelf = weakSelf;
         WQItem *current = nil;
         if (strongSelf && (NSUInteger)indexPath.row < strongSelf->_items.count &&
@@ -1705,7 +1828,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
     leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    return [self deleteSwipeForRowAtIndexPath:indexPath];
+    // Delete is on the left swipe only (issue #36).
+    return [UISwipeActionsConfiguration configurationWithActions:@[]];
 }
 
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
@@ -1729,7 +1853,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         if (!current || !strongSelf) return nil;
         NSMutableArray *actions = [NSMutableArray new];
         if (current.isDir) {
-            [actions addObject:[UIAction actionWithTitle:@"以 ZIP 分享（AirDrop…）" image:[UIImage systemImageNamed:@"square.and.arrow.up"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"以 ZIP 分享（AirDrop…）") image:[UIImage systemImageNamed:@"square.and.arrow.up"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 UITableViewCell *cell = [weakSelf.tableView cellForRowAtIndexPath:indexPath];
@@ -1737,7 +1861,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
             }]];
         }
         if (!current.isDir && current.isRegular) {
-            [actions addObject:[UIAction actionWithTitle:@"分享" image:[UIImage systemImageNamed:@"square.and.arrow.up"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"分享") image:[UIImage systemImageNamed:@"square.and.arrow.up"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 UITableViewCell *cell = [weakSelf.tableView cellForRowAtIndexPath:indexPath];
@@ -1745,7 +1869,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
             }]];
             NSString *original = wq_backup_original_path(current.path);
             if (original) {
-                [actions addObject:[UIAction actionWithTitle:@"还原到原位置"
+                [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"还原到原位置")
                                                        image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
                                                   identifier:nil handler:^(UIAction *__unused a) {
                     WQItem *latest = currentItem();
@@ -1755,34 +1879,46 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         }
         if (!current.isDir && current.isRegular) {
             BOOL ro = weakSelf.readOnly;
-            [actions addObject:[UIMenu menuWithTitle:@"打开方式" image:[UIImage systemImageNamed:@"arrow.up.forward.app"] identifier:nil
+            [actions addObject:[UIMenu menuWithTitle:WQLocalizedNullable(@"打开方式") image:[UIImage systemImageNamed:@"arrow.up.forward.app"] identifier:nil
                                              options:0 children:@[
-                [UIAction actionWithTitle:@"属性列表编辑器" image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
+                [UIAction actionWithTitle:WQLocalizedNullable(@"属性列表编辑器") image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenPlist); }],
-                [UIAction actionWithTitle:@"文本 / 图片" image:[UIImage systemImageNamed:@"doc.plaintext"] identifier:nil
+                [UIAction actionWithTitle:WQLocalizedNullable(@"文本 / 图片") image:[UIImage systemImageNamed:@"doc.plaintext"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenText); }],
-                [UIAction actionWithTitle:@"十六进制查看器" image:[UIImage systemImageNamed:@"number"] identifier:nil
+                [UIAction actionWithTitle:WQLocalizedNullable(@"十六进制查看器") image:[UIImage systemImageNamed:@"number"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenHex); }],
-                [UIAction actionWithTitle:@"SQLite 查看器" image:[UIImage systemImageNamed:@"tablecells"] identifier:nil
+                [UIAction actionWithTitle:WQLocalizedNullable(@"SQLite 查看器") image:[UIImage systemImageNamed:@"tablecells"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenSQLite); }],
-                [UIAction actionWithTitle:@"媒体播放器" image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
+                [UIAction actionWithTitle:WQLocalizedNullable(@"媒体播放器") image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenMedia); }],
             ]]];
         }
-        [actions addObject:[UIAction actionWithTitle:@"拷贝路径" image:[UIImage systemImageNamed:@"doc.on.doc"]
+        [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"拷贝路径") image:[UIImage systemImageNamed:@"doc.on.doc"]
                                           identifier:nil handler:^(UIAction *__unused a) {
             WQItem *latest = currentItem();
             if (latest) UIPasteboard.generalPasteboard.string = latest.path;
         }]];
         if (current.label) {
-            [actions addObject:[UIAction actionWithTitle:@"拷贝标识符" image:[UIImage systemImageNamed:@"tag"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"拷贝标识符") image:[UIImage systemImageNamed:@"tag"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 if (latest) UIPasteboard.generalPasteboard.string = latest.bundleID ?: latest.label;
             }]];
         }
-        if (current.isDir && wq_backup_unit_deletable(current.path)) {
-            UIAction *remove = [UIAction actionWithTitle:@"删除备份…" image:[UIImage systemImageNamed:@"trash"]
+        // App backups (AppBackups/<bundle id>[/<backup>]): restore through Apps,
+        // which knows the installed app's container.
+        NSString *backupParent = current.path.stringByDeletingLastPathComponent;
+        NSString *restoreID = [backupParent isEqualToString:wq_app_backup_root()] ? current.name
+            : [backupParent.stringByDeletingLastPathComponent isEqualToString:wq_app_backup_root()] ? backupParent.lastPathComponent : nil;
+        if (current.isDir && restoreID.length) {
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Restore Backup…") image:[UIImage systemImageNamed:@"clock.arrow.circlepath"]
+                                              identifier:nil handler:^(UIAction *__unused a) {
+                [weakSelf.navigationController pushViewController:[[WQAppsViewController alloc] initRestoringBundleID:restoreID]
+                                                         animated:YES];
+            }]];
+        }
+        if (current.isDir && wq_backup_unit_deletable(current.path) && wq_deleting_allowed()) {
+            UIAction *remove = [UIAction actionWithTitle:WQLocalizedNullable(@"删除备份…") image:[UIImage systemImageNamed:@"trash"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 if (latest) [weakSelf confirmDeleteBackup:latest];
@@ -1793,30 +1929,30 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         if ([strongSelf canEditHere]) {
             if (!current.isDir && current.isRegular &&
                 [current.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {
-                [actions addObject:[UIAction actionWithTitle:@"解压" image:[UIImage systemImageNamed:@"archivebox"]
+                [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"解压") image:[UIImage systemImageNamed:@"archivebox"]
                                                   identifier:nil handler:^(UIAction *__unused a) {
                     WQItem *latest = currentItem();
                     if (latest) [weakSelf extractZip:latest.path];
                 }]];
             }
-            [actions addObject:[UIAction actionWithTitle:@"压缩" image:[UIImage systemImageNamed:@"doc.zipper"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"压缩") image:[UIImage systemImageNamed:@"doc.zipper"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 if (latest) [weakSelf compressPaths:@[latest.path]];
             }]];
-            [actions addObject:[UIAction actionWithTitle:@"移动…" image:[UIImage systemImageNamed:@"folder"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"移动…") image:[UIImage systemImageNamed:@"folder"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
                 if (latest) [weakSelf startMove:@[latest.path]];
             }]];
         }
         if (!strongSelf.readOnly && !strongSelf->_backupStorage) {
-            [actions addObject:[UIAction actionWithTitle:@"重命名" image:[UIImage systemImageNamed:@"pencil"]
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"重命名") image:[UIImage systemImageNamed:@"pencil"]
                                               identifier:nil handler:^(UIAction *__unused a) { WQItem *latest = currentItem(); if (latest) [weakSelf promptRename:latest]; }]];
-            UIAction *del = [UIAction actionWithTitle:@"删除" image:[UIImage systemImageNamed:@"trash"]
+            UIAction *del = [UIAction actionWithTitle:WQLocalizedNullable(@"删除") image:[UIImage systemImageNamed:@"trash"]
                                            identifier:nil handler:^(UIAction *__unused a) { WQItem *latest = currentItem(); if (latest) [weakSelf confirmDelete:latest]; }];
             del.attributes = UIMenuElementAttributesDestructive;
-            [actions addObject:del];
+            if (wq_deleting_allowed()) [actions addObject:del];
         }
         return [UIMenu menuWithChildren:actions];
     }];
@@ -1838,83 +1974,78 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 
 - (void)promptNewFolder
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"新建文件夹" message:_path
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *f) { f.placeholder = @"名称"; }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"创建" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+    UIAlertController *alert = wq_alert_controller(@"新建文件夹", _path, UIAlertControllerStyleAlert);
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *f) { f.placeholder = WQLocalizedNullable(@"名称"); }];
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"创建", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         NSString *name = alert.textFields.firstObject.text;
         if (name.length == 0 || [name containsString:@"/"]) return;
         NSString *path = [self->_path stringByAppendingPathComponent:name];
-        [self runIO:^BOOL(NSString **error) { return wq_create_dir(path, error); } failure:@"无法创建文件夹"];
-    }]];
+        [self runIO:^BOOL(NSString **error) { return wq_create_dir(path, error); } failure:WQLocalizedNullable(@"无法创建文件夹")];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)promptRename:(WQItem *)item
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"重命名" message:item.path
-                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = wq_alert_controller(@"重命名", item.path, UIAlertControllerStyleAlert);
     [alert addTextFieldWithConfigurationHandler:^(UITextField *f) { f.text = item.name; }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"重命名" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"重命名", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         NSString *name = alert.textFields.firstObject.text;
-        [self runIO:^BOOL(NSString **error) { return wq_rename(item.path, name, error); } failure:@"无法重命名"];
-    }]];
+        [self runIO:^BOOL(NSString **error) { return wq_rename(item.path, name, error); } failure:WQLocalizedNullable(@"无法重命名")];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)confirmDeleteBackup:(WQItem *)item
 {
+    if (wq_refuse_if_deleting_off(self)) return;
     BOOL bundle = [item.path.stringByDeletingLastPathComponent isEqualToString:wq_app_backup_root()];
     NSString *message = bundle
-        ? [NSString stringWithFormat:@"%@\n\nThis removes every backup for this app. It cannot be undone.", item.path]
-        : [NSString stringWithFormat:@"%@\n\nThis removes the selected backup. It cannot be undone.", item.path];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除备份？"
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
-        [self runIO:^BOOL(NSString **error) { return wq_delete_backup(item.path, error); } failure:@"无法删除备份"];
-    }]];
+        ? WQLocalizedFormat(@"%@\n\nThis removes every backup for this app. It cannot be undone.", item.path)
+        : WQLocalizedFormat(@"%@\n\nThis removes the selected backup. It cannot be undone.", item.path);
+    UIAlertController *alert = wq_alert_controller(@"删除备份？", message, UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"删除", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+        [self runIO:^BOOL(NSString **error) { return wq_delete_backup(item.path, error); } failure:WQLocalizedNullable(@"无法删除备份")];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)confirmDelete:(WQItem *)item
 {
+    if (wq_refuse_if_deleting_off(self)) return;
     NSString *message;
     if (item.isLink) {
-        message = [NSString stringWithFormat:@"%@\n\nRemoves the symbolic link only; its target is not changed.", item.path];
+        message = WQLocalizedFormat(@"%@\n\nRemoves the symbolic link only; its target is not changed.", item.path);
     } else if (item.isDir) {
-        message = [NSString stringWithFormat:@"%@\n\nOnly empty folders can be deleted.", item.path];
+        message = WQLocalizedFormat(@"%@\n\nOnly empty folders can be deleted.", item.path);
     } else if (item.isRegular) {
-        message = [NSString stringWithFormat:@"%@\n\nA copy is kept in Backups.", item.path];
+        message = WQLocalizedFormat(@"%@\n\nA copy is kept in Backups.", item.path);
     } else {
-        message = [NSString stringWithFormat:@"%@\n\nThis special file is removed; no backup is kept.", item.path];
+        message = WQLocalizedFormat(@"%@\n\nThis special file is removed; no backup is kept.", item.path);
     }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"删除「%@」？", item.name]
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
-        [self runIO:^BOOL(NSString **error) { return wq_delete(item.path, error); } failure:@"无法删除"];
-    }]];
+    UIAlertController *alert = wq_alert_controller(WQLocalizedFormat(@"删除「%@」？", item.name), message, UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"删除", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+        [self runIO:^BOOL(NSString **error) { return wq_delete(item.path, error); } failure:WQLocalizedNullable(@"无法删除")];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)restoreBackup:(NSString *)backup to:(NSString *)original
 {
-    NSString *message = [NSString stringWithFormat:@"Write this backup back to\n%@?\n\nIf a file is there now, it is backed up first.", original];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"还原" message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"还原" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+    NSString *message = WQLocalizedFormat(@"Write this backup back to\n%@?\n\nIf a file is there now, it is backed up first.", original);
+    UIAlertController *alert = wq_alert_controller(@"还原", message, UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"还原", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         [self runIO:^BOOL(NSString **error) {
             struct stat st;
             return wq_stat(original, &st) ? wq_write_from_file(original, backup, error)
                                           : wq_create_file_from(original, backup, error);
-        } failure:@"还原失败"];
-    }]];
+        } failure:WQLocalizedNullable(@"还原失败")];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -1961,8 +2092,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
 - (void)runBusy:(NSString *)title failure:(NSString *)failureTitle
            work:(BOOL (^)(NSString **error, NSString **note))work
 {
-    UIAlertController *hud = [UIAlertController alertControllerWithTitle:title message:@"请稍候…"
-                                                          preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *hud = wq_alert_controller(title, @"请稍候…", UIAlertControllerStyleAlert);
     [self presentViewController:hud animated:YES completion:nil];
     dispatch_async(wq_io(), ^{
         NSString *error = nil, *note = nil;
@@ -1989,7 +2119,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
     // a question per file. The picker's local copies are removed afterwards.
     NSString *dir = _path;
     NSArray<NSString *> *sources = [urls valueForKey:@"path"];
-    [self runBusy:@"正在导入" failure:@"导入失败" work:^BOOL(NSString **error, NSString **note) {
+    [self runBusy:WQLocalized(@"正在导入") failure:WQLocalizedNullable(@"导入失败") work:^BOOL(NSString **error, NSString **note) {
         NSMutableSet<NSString *> *claimed = [NSMutableSet new];
         NSUInteger done = 0, renamed = 0;
         NSString *first = nil;
@@ -2007,8 +2137,8 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
                       (unsigned long)done, (unsigned long)sources.count, first];
             return NO;
         }
-        if (renamed) *note = [NSString stringWithFormat:@"已导入 %lu 个文件，其中 %lu 个因名称重复而自动加了编号。",
-                              (unsigned long)done, (unsigned long)renamed];
+        if (renamed) *note = WQLocalizedFormat(@"已导入 %lu 个文件，其中 %lu 个因名称重复而自动加了编号。",
+                              (unsigned long)done, (unsigned long)renamed);
         return YES;
     }];
 }
@@ -2016,7 +2146,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
 - (void)importFolders:(NSArray<NSURL *> *)urls
 {
     NSString *dir = _path;
-    [self runBusy:@"正在导入" failure:@"导入失败" work:^BOOL(NSString **error, NSString **note) {
+    [self runBusy:WQLocalized(@"正在导入") failure:WQLocalizedNullable(@"导入失败") work:^BOOL(NSString **error, NSString **note) {
         NSMutableSet<NSString *> *claimed = [NSMutableSet new];
         NSMutableArray<NSString *> *renamed = [NSMutableArray new];
         for (NSURL *url in urls) {
@@ -2037,7 +2167,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
                 if (!ok && e && wq_stat(dest, &(struct stat){0}))
                     e = [NSString stringWithFormat:@"%@\n\nPart of it may already be in %@.", e, name];
             } else {
-                e = @"此文件夹中没有可用的名称";
+                e = WQLocalized(@"此文件夹中没有可用的名称");
             }
             if (scoped) [url stopAccessingSecurityScopedResource];
             wq_log(@"import folder: %@ -> %@/%@: %@", url.path, dir, name, ok ? @"好" : e);
@@ -2045,8 +2175,8 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
             if (![name isEqualToString:url.lastPathComponent]) [renamed addObject:name];
         }
         if (renamed.count)
-            *note = [NSString stringWithFormat:@"已存在同名文件夹，因此导入结果被命名为 %@。",
-                     [renamed componentsJoinedByString:@", "]];
+            *note = WQLocalizedFormat(@"已存在同名文件夹，因此导入结果被命名为 %@。",
+                     [renamed componentsJoinedByString:@", "]);
         return YES;
     }];
 }
@@ -2066,21 +2196,18 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
                     BOOL ok = wq_create_file_from(dest, source, error);
                     cleanup();
                     return ok;
-                } failure:@"导入失败"];
+                } failure:WQLocalizedNullable(@"导入失败")];
                 return;
             }
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"替换现有文件？"
-                message:[NSString stringWithFormat:@"%@ 已存在，替换前会先备份。", dest]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel
-                                                    handler:^(UIAlertAction *__unused a) { cleanup(); }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"替换" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
+            UIAlertController *alert = wq_alert_controller(@"替换现有文件？", WQLocalizedFormat(@"%@ 已存在，替换前会先备份。", dest), UIAlertControllerStyleAlert);
+            [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) { cleanup(); })];
+            [alert addAction:wq_alert_action(@"替换", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
                 [self runIO:^BOOL(NSString **error) {
                     BOOL ok = wq_write_from_file(dest, source, error);
                     cleanup();
                     return ok;
-                } failure:@"导入失败"];
-            }]];
+                } failure:WQLocalizedNullable(@"导入失败")];
+            })];
             [self presentViewController:alert animated:YES completion:nil];
         });
     });
@@ -2105,7 +2232,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = @"系统群组";
+    self.title = WQLocalizedNullable(@"系统群组");
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
                                                                                            target:self action:@selector(tryName)];
     dispatch_async(wq_io(), ^{
@@ -2141,24 +2268,10 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     });
 }
 
-- (NSString *)systemGroupsFooterText
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (!_names) return @"加载中…";
-    return _listed ? nil : @"此 iOS 版本无法列出该文件夹。下方显示已确认存在的名称，点 + 可尝试其他名称。";
-}
-
-- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
-{
-    return wq_table_text_header([self systemGroupsFooterText], tableView.bounds.size.width, NO);
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
-{
-    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
-        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
+    if (!_names) return WQLocalized(@"加载中…");
+    return _listed ? nil : WQLocalized(@"此 iOS 版本无法列出该文件夹。下方显示已确认存在的名称，点 + 可尝试其他名称。");
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return (NSInteger)_names.count; }
@@ -2185,15 +2298,14 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 - (void)tryName
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"打开系统群组" message:nil
-                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = wq_alert_controller(@"打开系统群组", nil, UIAlertControllerStyleAlert);
     [alert addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.text = @"systemgroup.com.apple.";
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
         f.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"打开" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"打开", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         NSString *name = alert.textFields.firstObject.text;
         if (name.length == 0 || [name containsString:@"/"]) return;
         NSString *path = [kSystemGroupRoot stringByAppendingPathComponent:name];
@@ -2203,7 +2315,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
             return;
         }
         [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:path title:nil] animated:YES];
-    }]];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -2221,7 +2333,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = @"日志";
+    self.title = WQLocalizedNullable(@"日志");
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     _textView = [[UITextView alloc] initWithFrame:self.view.bounds];
     _textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -2237,8 +2349,8 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (NSString *)fullLog
 {
     NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    return [NSString stringWithFormat:@"WQ Files %@ (%@)\n%@\n\n%@",
-            info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?", wq_device_line(), wq_log_text()];
+    return WQLocalizedFormat(@"WQ Files %@ (%@)\n%@\n\n%@",
+            info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?", wq_device_line(), wq_log_text());
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -2286,7 +2398,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     UIBarButtonItem *home = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"house"]
                                                              style:UIBarButtonItemStylePlain target:self action:@selector(goHome)];
     home.tag = 0x484f4d45;   // "HOME"
-    home.accessibilityLabel = @"家庭";
+    home.accessibilityLabel = WQLocalizedNullable(@"家庭");
     vc.navigationItem.leftItemsSupplementBackButton = YES;
     vc.navigationItem.leftBarButtonItem = home;
 }
@@ -2325,7 +2437,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (instancetype)init
 {
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
-        self.title = @"WQ 文件";
+        self.title = WQLocalizedNullable(@"WQ 文件");
         _locations = @[
             @[@"App 数据", @"/private/var/mobile/Containers/Data/Application", @"square.grid.2x2"],
             @[@"App 群组", @"/private/var/mobile/Containers/Shared/AppGroup", @"square.stack.3d.up"],
@@ -2366,18 +2478,16 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
         NSString *group = wq_app_group();
         if (group) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"签名问题：缺少 App Group"
-                message:@"WQ Files needs an App Group to reach other apps' folders, and the tool that signed it removed it. "
+            UIAlertController *alert = wq_alert_controller(@"签名问题：缺少 App Group", @"WQ Files needs an App Group to reach other apps' folders, and the tool that signed it removed it. "
                         @"Without it nothing can be opened, and app lists stay empty or show \"NO TOKEN\".\n\n"
-                        @"Re-install WQ Files with AltStore, SideStore or Sideloadly (they create the App Group), "
+                        @"Re-install WQ Files with AltStore, SideStore or Impactor (they create the App Group; Sideloadly doesn't), "
                         @"or with a provisioning profile that contains one. Wildcard certificates (as used by many "
-                        @"Feather/ESign setups) can't."
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"签名帮助" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+                        @"Feather/ESign setups) can't.", UIAlertControllerStyleAlert);
+            [alert addAction:wq_alert_action(@"签名帮助", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
                 [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz/WQFiles#signing-the-app-group"]
                                                  options:@{} completionHandler:nil];
-            }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+            })];
+            [alert addAction:wq_alert_action(@"好", UIAlertActionStyleCancel, nil)];
             [self presentViewController:alert animated:YES completion:nil];
         });
     });
@@ -2389,8 +2499,8 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 128)];
     UILabel *by = [UILabel new];
     NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    by.text = [NSString stringWithFormat:@"WQ 文件 %@ (%@) · 作者 kolbicz",
-               info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?"];
+    by.text = WQLocalizedFormat(@"WQ 文件 %@ (%@) · 作者 kolbicz",
+               info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?");
     by.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     by.textColor = UIColor.secondaryLabelColor;
 
@@ -2412,7 +2522,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     links.spacing = 12;
 
     UIButtonConfiguration *creditCfg = [UIButtonConfiguration plainButtonConfiguration];
-    creditCfg.attributedTitle = [[NSAttributedString alloc] initWithString:@"沙盒利用：worse_query（作者 @forcequitOS）"
+    creditCfg.attributedTitle = [[NSAttributedString alloc] initWithString:WQLocalized(@"沙盒利用：worse_query（作者 @forcequitOS）")
         attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]}];
     creditCfg.buttonSize = UIButtonConfigurationSizeSmall;
     UIButton *credit = [UIButton buttonWithConfiguration:creditCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
@@ -2432,54 +2542,29 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     return footer;
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     // System Groups is the extra last row, on iOS 27 only.
+    if (section == 2) return 2;
     return section == 0 ? (NSInteger)_locations.count + (wq_system_areas_reachable() ? 1 : 0) : 6;
 }
 
-- (NSString *)rootHeaderTextForSection:(NSInteger)section
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? @"容器" : @"工具";
+    return section == 0 ? WQLocalized(@"容器") : section == 1 ? WQLocalized(@"工具") : WQLocalized(@"设置");
 }
 
-- (NSString *)rootFooterTextForSection:(NSInteger)section
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == 0 && !wq_system_areas_reachable())
-        return @"在 iOS 26 上无法访问系统数据和系统群组（worse_query 仅在 iOS 27 上覆盖），而内部守护进程需要扫描每个文件 id：设备使用较多时首次扫描可能接近一小时，之后只检查新文件。";
+        return WQLocalized(@"在 iOS 26 上无法访问系统数据和系统群组（worse_query 仅在 iOS 27 上覆盖），而内部守护进程需要扫描每个文件 id：设备使用较多时首次扫描可能接近一小时，之后只检查新文件。");
+    if (section == 2)
+        return WQLocalized(@"Allow Deleting: when off, nothing can be deleted: no Delete or swipe to delete in folders and backups, no Clear Data in Apps and no cleaning in the Cache Cleaner. Saving, moving and restoring still work.\n\nShow Item Counts: shows how many items each folder holds. Every subfolder has to be listed for this, which slows down folders with many subfolders, especially in other apps' data.");
     return section == 1
-        ? @"被覆盖和删除的文件会先复制到「备份」（在「文件」App 中也能看到）。长按某个备份即可还原。"
+        ? WQLocalized(@"被覆盖和删除的文件会先复制到「备份」（在「文件」App 中也能看到）。长按某个备份即可还原。")
         : nil;
-}
-
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
-{
-    return wq_table_text_header([self rootHeaderTextForSection:section], tableView.bounds.size.width, YES);
-}
-
-- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
-{
-    return wq_table_text_header([self rootFooterTextForSection:section], tableView.bounds.size.width, NO);
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
-{
-    CGSize size = [[self tableView:tableView viewForHeaderInSection:section]
-        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
-{
-    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
-        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -2487,19 +2572,37 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"r"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"r"];
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
+    cell.accessoryView = nil;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    if (indexPath.section == 2) {
+        BOOL counts = indexPath.row == 1;
+        c.text = counts ? WQLocalizedNullable(@"Show Item Counts") : WQLocalizedNullable(@"Allow Deleting");
+        c.image = [UIImage systemImageNamed:counts ? @"number" : @"trash.slash"];
+        UISwitch *toggle = [UISwitch new];
+        toggle.on = counts ? wq_show_item_counts() : wq_deleting_allowed();
+        [toggle addAction:[UIAction actionWithHandler:^(UIAction *action) {
+            BOOL on = ((UISwitch *)action.sender).isOn;
+            if (counts) [NSUserDefaults.standardUserDefaults setBool:on forKey:kWQShowItemCountsPref];
+            else wq_set_deleting_allowed(on);
+        }] forControlEvents:UIControlEventValueChanged];
+        cell.contentConfiguration = c;
+        cell.accessoryView = toggle;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
     if (indexPath.section == 0) {
         if ((NSUInteger)indexPath.row < _locations.count) {
             NSArray *loc = _locations[(NSUInteger)indexPath.row];
-            c.text = loc[0];
+            c.text = WQLocalizedNullable(loc[0]);
             c.image = [UIImage systemImageNamed:loc[2]];
         } else {
-            c.text = @"系统群组";
+            c.text = WQLocalizedNullable(@"系统群组");
             c.image = [UIImage systemImageNamed:@"lock.square.stack"];
         }
     } else {
         NSArray *tools = @[@[@"App 列表", @"square.grid.3x3"], @[@"缓存清理", @"trash"], @[@"前往路径…", @"arrow.right.circle"],
                            @[@"App 备份", @"clock.arrow.circlepath"], @[@"备份", @"clock.arrow.circlepath"], @[@"日志", @"doc.plaintext"]];
-        c.text = tools[(NSUInteger)indexPath.row][0];
+        c.text = WQLocalizedNullable(tools[(NSUInteger)indexPath.row][0]);
         c.image = [UIImage systemImageNamed:tools[(NSUInteger)indexPath.row][1]];
     }
     cell.contentConfiguration = c;
@@ -2510,6 +2613,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == 2) return;
     UIViewController *next = nil;
     if (indexPath.section == 0) {
         if ((NSUInteger)indexPath.row < _locations.count) {
@@ -2527,10 +2631,10 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
         return;
     } else if (indexPath.row == 3) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
-        next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:@"App 备份"];
+        next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:WQLocalizedNullable(@"App 备份")];
     } else if (indexPath.row == 4) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
-        next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"备份"];
+        next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:WQLocalizedNullable(@"备份")];
     } else {
         next = [WQLogViewController new];
     }
@@ -2539,8 +2643,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 - (void)goToPath
 {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"前往路径" message:@"文件夹或文件路径"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = wq_alert_controller(@"前往路径", @"文件夹或文件路径", UIAlertControllerStyleAlert);
     [alert addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.text = UIPasteboard.generalPasteboard.hasStrings && [UIPasteboard.generalPasteboard.string hasPrefix:@"/"]
             ? UIPasteboard.generalPasteboard.string : @"/private/var/";
@@ -2548,8 +2651,8 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
         f.autocorrectionType = UITextAutocorrectionTypeNo;
         f.clearButtonMode = UITextFieldViewModeAlways;
     }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"打开" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+    [alert addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"打开", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         NSString *path = alert.textFields.firstObject.text.stringByStandardizingPath;
         if (![path hasPrefix:@"/"]) return;
         dispatch_async(wq_io(), ^{
@@ -2570,7 +2673,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
                                                      animated:YES];
             });
         });
-    }]];
+    })];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -2612,14 +2715,14 @@ static UIViewController *wq_top_view_controller(void)
 
 static NSString *wq_duration_text(double seconds)
 {
-    if (seconds < 90) return @"约 1 分钟";
-    if (seconds < 3600) return [NSString stringWithFormat:@"约 %.0f 分钟", ceil(seconds / 60)];
-    return [NSString stringWithFormat:@"约 %.1f 小时", seconds / 3600];
+    if (seconds < 90) return WQLocalized(@"约 1 分钟");
+    if (seconds < 3600) return WQLocalizedFormat(@"约 %.0f 分钟", ceil(seconds / 60));
+    return WQLocalizedFormat(@"约 %.1f 小时", seconds / 3600);
 }
 
 static NSString *wq_count_text(int64_t n)
 {
-    if (n >= 1000000) return [NSString stringWithFormat:@"%.0f 百万", n / 1e6];
+    if (n >= 1000000) return WQLocalizedFormat(@"%.0f 百万", n / 1e6);
     return [NSNumberFormatter localizedStringFromNumber:@(n) numberStyle:NSNumberFormatterDecimalStyle];
 }
 
@@ -2642,7 +2745,7 @@ static NSString *wq_count_text(int64_t n)
     icon.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:40 weight:UIImageSymbolWeightRegular];
     icon.tintColor = UIColor.tintColor;
     UILabel *title = [UILabel new];
-    title.text = @"正在扫描所有文件";
+    title.text = WQLocalizedNullable(@"正在扫描所有文件");
     title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
     title.adjustsFontForContentSizeCategory = YES;
     UILabel *text = [UILabel new];
@@ -2650,23 +2753,21 @@ static NSString *wq_count_text(int64_t n)
     text.textAlignment = NSTextAlignmentCenter;
     text.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     text.textColor = UIColor.secondaryLabelColor;
-    text.text = @"iOS doesn't let WQ Files list these folders directly, so it checks every file on this device once. "
-                @"This is only slow the first time: later scans only check new files.\n\n"
-                @"Keep WQ Files open. Switching to another app or locking the screen pauses the scan.";
+    text.text = WQLocalizedNullable(@"iOS doesn't let WQ Files list these folders directly, so it checks every file on this device once. This is only slow the first time: later scans only check new files.\n\nKeep WQ Files open. Switching to another app or locking the screen pauses the scan.");
     _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
     _status = [UILabel new];
     _status.font = [UIFont monospacedDigitSystemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize
                                                     weight:UIFontWeightRegular];
     _status.textAlignment = NSTextAlignmentCenter;
-    _status.text = @"正在开始…";
+    _status.text = WQLocalizedNullable(@"正在开始…");
     UIButton *hide = [UIButton buttonWithConfiguration:UIButtonConfiguration.borderedButtonConfiguration primaryAction:
-        [UIAction actionWithTitle:@"隐藏" image:nil identifier:nil handler:^(UIAction *__unused a) {
+        [UIAction actionWithTitle:WQLocalizedNullable(@"隐藏") image:nil identifier:nil handler:^(UIAction *__unused a) {
             [self dismissViewControllerAnimated:YES completion:nil];
         }]];
     UIButtonConfiguration *stopConfig = UIButtonConfiguration.borderedButtonConfiguration;
     stopConfig.baseForegroundColor = UIColor.systemRedColor;
     UIButton *stop = [UIButton buttonWithConfiguration:stopConfig primaryAction:
-        [UIAction actionWithTitle:@"停止扫描" image:nil identifier:nil handler:^(UIAction *__unused a) {
+        [UIAction actionWithTitle:WQLocalizedNullable(@"停止扫描") image:nil identifier:nil handler:^(UIAction *__unused a) {
             wq_full_scan_stop();
             [self dismissViewControllerAnimated:YES completion:nil];
         }]];
@@ -2678,7 +2779,7 @@ static NSString *wq_count_text(int64_t n)
     note.textAlignment = NSTextAlignmentCenter;
     note.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     note.textColor = UIColor.tertiaryLabelColor;
-    note.text = @"隐藏后扫描仍会继续，完成后列表会自动填充。";
+    note.text = WQLocalizedNullable(@"隐藏后扫描仍会继续，完成后列表会自动填充。");
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[icon, title, text, _bar, _status, buttons, note]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentCenter;
@@ -2706,7 +2807,7 @@ static NSString *wq_count_text(int64_t n)
     NSString *left = @"";
     if (elapsed > 5 && done > 0 && done < total) {
         double remaining = elapsed * (double)(total - done) / (double)done;
-        left = [@" · " stringByAppendingString:[wq_duration_text(remaining) stringByAppendingString:@" left"]];
+        left = WQLocalizedFormat(@" · %@ left", wq_duration_text(remaining));
     }
     _status.text = [NSString stringWithFormat:@"%.0f%%%@", fraction * 100, left];
 }
@@ -2724,16 +2825,12 @@ static BOOL wq_confirm_full_scan(NSString *what, int64_t ids, double seconds)
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *top = wq_top_view_controller();
         if (!top) { dispatch_semaphore_signal(answered); return; }   // not in front: don't scan unasked
-        NSString *message = [NSString stringWithFormat:
-            @"To list %@, WQ Files has to check every file on this device once: %@ files, %@.\n\n"
-            @"This is only needed the first time; later scans only check new files and take seconds.\n\n"
-            @"Keep WQ Files open while it scans.", what, wq_count_text(ids), wq_duration_text(seconds)];
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"扫描所有文件？" message:message
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"以后再说" style:UIAlertActionStyleCancel handler:^(UIAlertAction *__unused a) {
+        NSString *message = WQLocalizedFormat(@"To list %@, WQ Files has to check every file on this device once: %@ files, %@.\n\nThis is only needed the first time; later scans only check new files and take seconds.\n\nKeep WQ Files open while it scans.", what, wq_count_text(ids), wq_duration_text(seconds));
+        UIAlertController *alert = wq_alert_controller(@"扫描所有文件？", message, UIAlertControllerStyleAlert);
+        [alert addAction:wq_alert_action(@"以后再说", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) {
             dispatch_semaphore_signal(answered);
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"开始扫描" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+        })];
+        [alert addAction:wq_alert_action(@"开始扫描", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             start = YES;
             // A little extra time when the user switches away (iOS grants about 30 s).
             if (gScanBackgroundTask == UIBackgroundTaskInvalid) {
@@ -2754,7 +2851,7 @@ static BOOL wq_confirm_full_scan(NSString *what, int64_t ids, double seconds)
                 UIViewController *host = wq_top_view_controller();
                 if (gScanWindow == window && host && host != window) [host presentViewController:window animated:YES completion:nil];
             });
-        }]];
+        })];
         [top presentViewController:alert animated:YES completion:nil];
     });
     dispatch_semaphore_wait(answered, DISPATCH_TIME_FOREVER);

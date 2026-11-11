@@ -41,11 +41,11 @@ static const NSUInteger kWQSQLiteQueryLimit = 1000;
 static BOOL wq_sqlite_copy(NSString *src, NSString *dst, NSString **error)
 {
     if (![NSFileManager.defaultManager createFileAtPath:dst contents:nil attributes:nil]) {
-        *error = @"无法创建临时副本";
+        *error = WQLocalized(@"cannot create the temporary copy");
         return NO;
     }
     NSFileHandle *out = [NSFileHandle fileHandleForWritingAtPath:dst];
-    if (!out) { *error = @"无法写入临时副本"; return NO; }
+    if (!out) { *error = WQLocalized(@"cannot write the temporary copy"); return NO; }
     const NSUInteger chunk = 1024 * 1024;
     unsigned long long offset = 0;
     BOOL ok = YES;
@@ -53,13 +53,13 @@ static BOOL wq_sqlite_copy(NSString *src, NSString *dst, NSString **error)
         for (;;) {
             NSString *readError = nil;
             NSData *data = wq_read_range(src, offset, chunk, &readError);
-            if (!data) { *error = readError ?: @"读取失败"; ok = NO; break; }
+            if (!data) { *error = readError ?: WQLocalized(@"read failed"); ok = NO; break; }
             if (data.length) [out writeData:data];
             offset += data.length;
             if (data.length < chunk) break;
         }
     } @catch (NSException *exception) {
-        *error = exception.reason ?: @"写入失败";
+        *error = exception.reason ?: WQLocalized(@"write failed");
         ok = NO;
     }
     [out closeFile];
@@ -74,7 +74,7 @@ static BOOL wq_sqlite_copy(NSString *src, NSString *dst, NSString **error)
     _dir = [NSTemporaryDirectory() stringByAppendingPathComponent:
             [@"wq-sqlite-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     if (![NSFileManager.defaultManager createDirectoryAtPath:_dir withIntermediateDirectories:YES attributes:nil error:nil]) {
-        *error = @"无法创建临时文件夹";
+        *error = WQLocalized(@"cannot create a temporary folder");
         return nil;
     }
     NSString *copy = [_dir stringByAppendingPathComponent:@"db.sqlite"];
@@ -93,7 +93,7 @@ static BOOL wq_sqlite_copy(NSString *src, NSString *dst, NSString **error)
     sqlite3 *db = NULL;
     int rc = sqlite3_open_v2(copy.fileSystemRepresentation, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL);
     if (rc != SQLITE_OK) {
-        *error = db ? @(sqlite3_errmsg(db)) : @"无法打开数据库";
+        *error = db ? @(sqlite3_errmsg(db)) : WQLocalized(@"cannot open the database");
         if (db) sqlite3_close(db);
         return nil;
     }
@@ -139,21 +139,21 @@ static NSString *wq_sqlite_hex(const uint8_t *bytes, int length, int limit)
 static NSString *wq_sqlite_value(sqlite3_stmt *stmt, int column, BOOL full)
 {
     switch (sqlite3_column_type(stmt, column)) {
-        case SQLITE_NULL: return @"NULL";
+        case SQLITE_NULL: return WQLocalized(@"NULL");
         case SQLITE_INTEGER: return [NSString stringWithFormat:@"%lld", sqlite3_column_int64(stmt, column)];
         case SQLITE_FLOAT: return [NSString stringWithFormat:@"%.15g", sqlite3_column_double(stmt, column)];
         case SQLITE_BLOB: {
             const uint8_t *bytes = sqlite3_column_blob(stmt, column);
             int length = sqlite3_column_bytes(stmt, column);
             if (length >= 8 && bytes && memcmp(bytes, "bplist0", 7) == 0)
-                return [NSString stringWithFormat:@"<二进制属性列表，%d 字节>", length];
+                return WQLocalizedFormat(@"<二进制属性列表，%d 字节>", length);
             NSString *hex = bytes ? wq_sqlite_hex(bytes, length, full ? 512 : 16) : @"";
-            return [NSString stringWithFormat:@"<%d 字节> %@", length, hex];
+            return WQLocalizedFormat(@"<%d 字节> %@", length, hex);
         }
         default: {
             const unsigned char *text = sqlite3_column_text(stmt, column);
             NSString *s = text ? [NSString stringWithUTF8String:(const char *)text] : nil;
-            if (!s) return @"<文本不是 UTF-8>";
+            if (!s) return WQLocalized(@"<文本不是 UTF-8>");
             if (!full && s.length > 200) s = [[s substringToIndex:200] stringByAppendingString:@"…"];
             return s;
         }
@@ -219,7 +219,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     NSString *value = _values[(NSUInteger)indexPath.section];
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil
         actionProvider:^UIMenu *(NSArray<UIMenuElement *> *__unused suggested) {
-        return [UIMenu menuWithChildren:@[[UIAction actionWithTitle:@"拷贝" image:[UIImage systemImageNamed:@"doc.on.doc"]
+        return [UIMenu menuWithChildren:@[[UIAction actionWithTitle:WQLocalizedNullable(@"拷贝") image:[UIImage systemImageNamed:@"doc.on.doc"]
                                                           identifier:nil handler:^(UIAction *__unused a) {
             UIPasteboard.generalPasteboard.string = value;
         }]]];
@@ -264,7 +264,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
 {
     [super viewDidLoad];
     if (_exportName) {
-        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"CSV" style:UIBarButtonItemStylePlain
+        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"CSV") style:UIBarButtonItemStylePlain
                                                                                  target:self action:@selector(exportCSV:)];
     }
     [self loadMore];
@@ -289,7 +289,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         if (sqlite3_prepare_v2(snapshot.db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK) {
             error = @(sqlite3_errmsg(snapshot.db));
         } else if (!sqlite3_stmt_readonly(stmt)) {
-            error = @"此处只能执行只读语句。";
+            error = WQLocalized(@"此处只能执行只读语句。");
         } else {
             int count = sqlite3_column_count(stmt);
             for (int i = 0; i < count; i++) [columns addObject:@(sqlite3_column_name(stmt, i) ?: "?")];
@@ -318,26 +318,12 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     return (_error || (!_rows.count && _done)) ? 1 : (NSInteger)_rows.count;
 }
 
-- (NSString *)rowsHeaderText
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     if (_error || !_columns) return nil;
     NSString *more = _done ? @"" : @"+";
-    if (_limit && _rows.count >= _limit) more = [NSString stringWithFormat:@"（前 %lu 条）", (unsigned long)_limit];
-    return [NSString stringWithFormat:@"%lu%@ 行 · %lu 列", (unsigned long)_rows.count, more, (unsigned long)_columns.count];
-}
-
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
-{
-    return wq_table_text_header([self rowsHeaderText], tableView.bounds.size.width, YES);
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
-{
-    CGSize size = [[self tableView:tableView viewForHeaderInSection:section]
-        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
+    if (_limit && _rows.count >= _limit) more = WQLocalizedFormat(@"（前 %lu 条）", (unsigned long)_limit);
+    return WQLocalizedFormat(@"%lu%@ 行 · %lu 列", (unsigned long)_rows.count, more, (unsigned long)_columns.count);
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -346,7 +332,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"row"];
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
     if (_error || !_rows.count) {
-        c.text = _error ?: @"没有行";
+        c.text = _error ?: WQLocalized(@"没有行");
         c.textProperties.color = _error ? UIColor.systemRedColor : UIColor.secondaryLabelColor;
         c.textProperties.numberOfLines = 0;
         cell.contentConfiguration = c;
@@ -377,7 +363,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     if (_error || (NSUInteger)indexPath.row >= _rows.count) return;
     WQSQLiteRowViewController *detail = [[WQSQLiteRowViewController alloc]
         initWithColumns:_columns values:_rows[(NSUInteger)indexPath.row]
-                  title:[NSString stringWithFormat:@"第 %ld 行", (long)indexPath.row + 1]];
+                  title:WQLocalizedFormat(@"第 %ld 行", (long)indexPath.row + 1)];
     [self.navigationController pushViewController:detail animated:YES];
 }
 
@@ -395,9 +381,9 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         [NSFileManager.defaultManager createFileAtPath:out contents:nil attributes:nil];
         NSFileHandle *file = [NSFileHandle fileHandleForWritingAtPath:out];
         sqlite3_stmt *stmt = NULL;
-        if (!file) error = @"无法创建 CSV 文件";
+        if (!file) error = WQLocalized(@"cannot create the CSV file");
         else if (sqlite3_prepare_v2(snapshot.db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK) error = @(sqlite3_errmsg(snapshot.db));
-        else if (!sqlite3_stmt_readonly(stmt)) error = @"此处只能执行只读语句。";
+        else if (!sqlite3_stmt_readonly(stmt)) error = WQLocalized(@"此处只能执行只读语句。");
         else {
             int count = sqlite3_column_count(stmt);
             NSMutableArray *header = [NSMutableArray new];
@@ -438,7 +424,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
 {
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _snapshot = snapshot;
-        self.title = @"SQL";
+        self.title = WQLocalizedNullable(@"SQL");
     }
     return self;
 }
@@ -463,7 +449,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         [_textView.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
         [_textView.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
     ]];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"执行" style:UIBarButtonItemStyleProminent
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"执行") style:UIBarButtonItemStyleProminent
                                                                              target:self action:@selector(run)];
     [_textView becomeFirstResponder];
 }
@@ -480,17 +466,17 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         sqlite3_stmt *stmt = NULL;
         const char *tail = NULL;
         if (sqlite3_prepare_v2(snapshot.db, sql.UTF8String, -1, &stmt, &tail) != SQLITE_OK) error = @(sqlite3_errmsg(snapshot.db));
-        else if (!stmt) error = @"没有可执行的内容。";
-        else if (!sqlite3_stmt_readonly(stmt)) error = @"此处只能执行只读语句（SELECT、只读 PRAGMA、EXPLAIN）。";
+        else if (!stmt) error = WQLocalized(@"没有可执行的内容。");
+        else if (!sqlite3_stmt_readonly(stmt)) error = WQLocalized(@"此处只能执行只读语句（SELECT、只读 PRAGMA、EXPLAIN）。");
         else if (tail && *tail) {
             NSString *rest = [@(tail) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            if (rest.length) error = @"请一次只执行一条语句。";
+            if (rest.length) error = WQLocalized(@"请一次只执行一条语句。");
         }
-        else if (sqlite3_column_count(stmt) == 0) error = @"此语句不返回任何行。";
+        else if (sqlite3_column_count(stmt) == 0) error = WQLocalized(@"此语句不返回任何行。");
         sqlite3_finalize(stmt);
     });
     if (error) { wq_alert(self, @"无法执行", error); return; }
-    WQSQLiteRowsViewController *rows = [[WQSQLiteRowsViewController alloc] initWithSnapshot:snapshot sql:sql title:@"结果"
+    WQSQLiteRowsViewController *rows = [[WQSQLiteRowsViewController alloc] initWithSnapshot:snapshot sql:sql title:WQLocalizedNullable(@"结果")
                                                                                  exportName:@"query" limit:kWQSQLiteQueryLimit];
     [self.navigationController pushViewController:rows animated:YES];
 }
@@ -522,7 +508,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"SQL" style:UIBarButtonItemStylePlain
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"SQL") style:UIBarButtonItemStylePlain
                                                                              target:self action:@selector(openQuery)];
     self.navigationItem.rightBarButtonItem.enabled = NO;
     NSString *path = _path;
@@ -594,44 +580,16 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     return (_loading || _error || !_tables.count) ? 1 : (NSInteger)_tables.count;
 }
 
-- (NSString *)sqliteTablesHeaderText
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return _tables.count ? @"表和视图" : nil;
+    return _tables.count ? WQLocalized(@"表和视图") : nil;
 }
 
-- (NSString *)sqliteTablesFooterText
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (!_snapshot) return nil;
-    NSString *wal = _snapshot.copiedWAL ? @"（含 -wal 文件）" : @"";
-    return [NSString stringWithFormat:@"只读。这是打开时创建的数据库副本%@，App 自己的文件不会被修改。若想获得最新副本，请先关闭该 App。", wal];
-}
-
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
-{
-    return wq_table_text_header([self sqliteTablesHeaderText], tableView.bounds.size.width, YES);
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
-{
-    CGSize size = [[self tableView:tableView viewForHeaderInSection:section]
-        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
-}
-
-- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
-{
-    return wq_table_text_header([self sqliteTablesFooterText], tableView.bounds.size.width, NO);
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
-{
-    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
-        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
+    NSString *wal = _snapshot.copiedWAL ? WQLocalized(@" and its -wal file") : @"";
+    return WQLocalizedFormat(@"只读。这是打开时创建的数据库副本%@，App 自己的文件不会被修改。若想获得最新副本，请先关闭该 App。", wal);
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -641,13 +599,13 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
     UIListContentConfiguration *c = [UIListContentConfiguration valueCellConfiguration];
     cell.accessoryType = UITableViewCellAccessoryNone;
     if (_loading) {
-        c.text = @"正在复制并打开…";
+        c.text = WQLocalizedNullable(@"正在复制并打开…");
     } else if (_error) {
-        c.text = [@"无法打开此数据库：" stringByAppendingString:_error];
+        c.text = [WQLocalized(@"无法打开此数据库：") stringByAppendingString:_error];
         c.textProperties.color = UIColor.systemRedColor;
         c.textProperties.numberOfLines = 0;
     } else if (!_tables.count) {
-        c.text = @"没有表";
+        c.text = WQLocalizedNullable(@"没有表");
         c.textProperties.color = UIColor.secondaryLabelColor;
     } else {
         NSDictionary *table = _tables[(NSUInteger)indexPath.row];
@@ -655,7 +613,7 @@ static NSString *wq_sqlite_csv_field(sqlite3_stmt *stmt, int column)
         c.text = table[@"name"];
         c.image = [UIImage systemImageNamed:view ? @"eye" : @"tablecells"];
         NSNumber *count = _counts[table[@"name"]];
-        c.secondaryText = view ? @"view" : (count ? [NSString stringWithFormat:@"%@ 行", count] : @"…");
+        c.secondaryText = view ? WQLocalized(@"view") : (count ? WQLocalizedFormat(@"%@ 行", count) : @"…");
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
     cell.contentConfiguration = c;

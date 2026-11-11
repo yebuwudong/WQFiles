@@ -61,9 +61,12 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
     -isysroot "$SDK" -Wall -Wextra -Werror -O2 \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
-    WQCore.m WQAccess.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQArchive.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
+    WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQArchive.m WQSyntax.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*@*.png "$APP/"
+for lproj in "$ROOT"/*.lproj; do
+    [[ -d "$lproj" ]] && cp -R "$lproj" "$APP/"
+done
 plutil -convert binary1 "$APP/Info.plist"
 codesign -f -s - --entitlements entitlements.plist "$APP"
 

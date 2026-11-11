@@ -1,5 +1,3 @@
-> **汉化版（本分支）**：界面已汉化，汉化 IPA 在 [Releases](https://github.com/yebuwudong/WQFiles/releases/tag/zh-latest)，汉化说明见 [README.zh.md](README.zh.md)。以下为上游原文说明。
-
 # Worse Query Files
 
 **WQ Files** is a file browser, app data manager and cache cleaner for iOS 26
@@ -21,7 +19,7 @@ other apps' bundles, so apps show symbol tiles.
 ## What it opens
 
 - **App Data**: every app's data container (`Containers/Data/Application`),
-  shown with the app's name and icon instead of a UUID.
+  shown with the app's name, bundle ID and icon instead of a UUID.
 - **App Groups**: shared group containers.
 - **Extension Data** and **Internal Daemons**.
 - **System Data**: `/var/containers/Data/System` (listing only; its contents
@@ -43,7 +41,7 @@ new files.
 ## Tools
 
 - **Apps**: every app with its data size. Back up an app's **Documents and
-  Library**, restore the latest backup, clear its data (Documents, Library,
+  Library**, restore the latest backup (also from **App Backups**: long-press the app → Restore Backup), clear its data (Documents, Library,
   and tmp), open its folder, or share a backup as a ZIP over AirDrop, Files,
   Mail and so on. Show all apps, only Apple's, only others or only backed-up
   ones; long-press to copy the bundle ID or container path. `tmp` is intentionally ephemeral: clear removes it, but app
@@ -55,7 +53,7 @@ new files.
   and **Open As** switches between them. Saving writes back in place (same
   inode, owner and attributes). Create folders, import files (several at
   once) or whole folders with everything inside, rename and
-  delete (long-press, or swipe a row left or right; deleting always asks
+  delete (long-press, or swipe a row to the left; deleting always asks
   first). Sort by name, date modified, date created or size from the •••
   menu; long lists sorted by name get an A–Z sidebar. Long-press a folder to share it as a ZIP.
   - **Select** (top right) several items to move, compress or delete them
@@ -78,8 +76,16 @@ new files.
   - **Media player**: audio and video (mp3, m4a, wav, mp4, mov…) play in the
     system player. The file is copied to WQ Files' temporary folder first.
   - **Text and images**: text is editable, images render, plists can also be
-    edited as XML text.
+    edited as XML text. Code and data files get syntax colors (XML/plist,
+    JSON, YAML, INI/TOML, CSS, SQL, Markdown, C/Objective-C, Swift,
+    JavaScript/TypeScript, Java/Kotlin, Go, Rust, Python, shell, Ruby, Lua;
+    up to 1 MB).
 - **Log**: file writes, backups, deletions, restores and errors the app handled, plus the App Group it received.
+- **Allow Deleting** (start screen, on by default): turn it off and nothing
+  can be deleted, cleared or cleaned; saving, moving and restoring still work.
+- **Show Item Counts** (start screen, off by default): folders show how many
+  items they hold. Every subfolder is listed for this, which slows down
+  folders with many subfolders.
 
 App names come from LaunchServices' own database, read from lsd's container
 (the LaunchServices API itself refuses this app on 27.x). Apple services that
@@ -163,8 +169,12 @@ your app's group container. Whatever signs the IPA must give it one. The app
 uses whichever group it receives, so the group name doesn't matter. The top
 of **Log** shows the group it got, or "No App Group" when it got none.
 
-- **AltStore, SideStore or Sideloadly with your Apple ID** (free or paid):
-  they create the App Group automatically. This is the easiest way.
+- **AltStore, SideStore or [Impactor](https://github.com/claration/impactor)
+  with your Apple ID** (free or paid): they create the App Group
+  automatically. This is the easiest way. Impactor runs on macOS, Windows and
+  Linux; it's confirmed to work with a paid developer account. **Sideloadly
+  doesn't add the App Group**, so WQ Files signed with it reports "No App
+  Group".
 - **Feather, ESign and similar tools with a certificate (.p12) and a
   provisioning profile:** the profile has to contain an App Group. Wildcard
   profiles (App ID `*`), which most certificate sellers provide, can't contain

@@ -5,6 +5,7 @@
 //
 
 #import "WQLaunchServices.h"
+#import "WQLocalization.h"
 #import "WQAccess.h"
 #import <stdlib.h>
 #import <string.h>
@@ -170,6 +171,11 @@ typedef struct {
 static const WQLSLayout kWQLSLayouts[] = {
     { "27.0", 0x250, 0x0c, 0x68, 0x6c, 0x74, 0x00, 0x118, 0x00, 0x54 },
     { "26",   0x23c, 0x0c, 0x64, 0x68, 0x70, 0x00, 0x104, 0x00, 0x50 },
+    // iOS 26.5 (from a device's layout hint, issue #37): same record sizes,
+    // container fields 4 bytes earlier than on 26.7. Whether the bundle id
+    // moved too isn't known, so both positions are tried.
+    { "26.5",  0x23c, 0x0c, 0x60, 0x64, 0x6c, 0x00, 0x104, 0x00, 0x4c },
+    { "26.5b", 0x23c, 0x08, 0x60, 0x64, 0x6c, 0x00, 0x104, 0x00, 0x4c },
     // iOS 27.2 (from a device's layout hint): container fields 4 bytes later
     // than on 27.0. Whether the bundle id moved too isn't known yet, so both
     // positions are tried; the one that maps the most containers wins.
@@ -281,8 +287,9 @@ static int wq_u32_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-static void wq_ls_log_summary(const uint8_t *b, size_t n, NSString *layout, NSUInteger bundleRecords,
-                              NSUInteger pluginRecords, NSUInteger names, NSUInteger mapped)
+// String refs of the data container paths stored in the database, sorted;
+// independent of the record layout.
+static NSMutableData *wq_ls_container_path_refs(const uint8_t *b, size_t n)
 {
     NSMutableData *refData = [NSMutableData new];
     static const char needle[] = "/var/mobile/Containers/Data/";
@@ -302,9 +309,17 @@ static void wq_ls_log_summary(const uint8_t *b, size_t n, NSString *layout, NSUI
         if (ref) [refData appendBytes:&ref length:sizeof(ref)];
         if (refData.length / sizeof(uint32_t) >= 20000) break;
     }
+    NSUInteger count = refData.length / sizeof(uint32_t);
+    if (count) qsort(refData.mutableBytes, count, sizeof(uint32_t), wq_u32_cmp);
+    return refData;
+}
+
+static void wq_ls_log_summary(const uint8_t *b, size_t n, NSString *layout, NSUInteger bundleRecords,
+                              NSUInteger pluginRecords, NSUInteger names, NSUInteger mapped)
+{
+    NSMutableData *refData = wq_ls_container_path_refs(b, n);
     NSUInteger pathCount = refData.length / sizeof(uint32_t);
     uint32_t *refs = refData.mutableBytes;
-    if (pathCount) qsort(refs, pathCount, sizeof(uint32_t), wq_u32_cmp);
     wq_log(@"names: store %.1f MB, layout %@: %lu bundle and %lu plugin records, %lu names, %lu of %lu container paths mapped",
            n / 1048576.0, layout, (unsigned long)bundleRecords, (unsigned long)pluginRecords, (unsigned long)names,
            (unsigned long)mapped, (unsigned long)pathCount);
@@ -538,6 +553,16 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
     if (newSummary && samples.count) wq_log(@"names: sample: %@", [samples componentsJoinedByString:@", "]);
     if (newSummary) wq_ls_log_summary(b, n, @(kWQLSLayouts[chosen].label), layoutRecs[chosen].length / (5 * sizeof(uint32_t)),
                       layoutPlugins[chosen].length / (2 * sizeof(uint32_t)), display.count, containers.count);
+    // A layout that maps only a small part of the container paths in the store
+    // is the wrong one (its names are wrong too): don't use the store at all,
+    // so the app list falls back to the scan instead of showing a few apps.
+    NSUInteger storePaths = wq_ls_container_path_refs(b, n).length / sizeof(uint32_t);
+    if (storePaths >= 20 && containers.count * 2 < storePaths) {
+        if (newSummary)
+            wq_log(@"names: layout %s maps only %lu of %lu container paths; this iOS version's database layout isn't known, so it isn't used",
+                   kWQLSLayouts[chosen].label, (unsigned long)containers.count, (unsigned long)storePaths);
+        return NO;
+    }
     if (bundlePathsOut) *bundlePathsOut = [bundlePaths copy];
     if (displayOut) *displayOut = [display copy];
     if (bundleNameOut) *bundleNameOut = [bundleName copy];
@@ -775,7 +800,7 @@ NSString *wq_display_name(NSString *bundleID)
     if (!bundleID) return nil;
     @synchronized (wq_ls_lock()) {
         NSString *name = wq_known_name_locked(bundleID);
-        if (name) return name;
+        if (name) return WQLocalized(name);
         // Unknown id: use the closest parent app (com.apple.news.widget -> News).
         NSArray *parts = [bundleID componentsSeparatedByString:@"."];
         for (NSInteger n = (NSInteger)parts.count - 1; n >= 2; n--) {
@@ -783,7 +808,8 @@ NSString *wq_display_name(NSString *bundleID)
             NSString *parent = wq_known_name_locked(prefix);
             if (parent) {
                 NSString *suffix = wq_safe_name(parts.lastObject);
-                return suffix.length ? [NSString stringWithFormat:@"%@ \u2013 %@", parent, suffix] : parent;
+                NSString *display = suffix.length ? [NSString stringWithFormat:@"%@ \u2013 %@", parent, suffix] : parent;
+                return WQLocalized(display);
             }
         }
         return nil;

@@ -34,15 +34,15 @@ static WQPType wqp_type(id v)
 static NSString *wqp_type_name(WQPType t)
 {
     switch (t) {
-        case WQPTypeString: return @"字符串";
-        case WQPTypeInteger: return @"数字";
-        case WQPTypeReal: return @"实数";
-        case WQPTypeBoolean: return @"布尔值";
-        case WQPTypeDate: return @"日期";
-        case WQPTypeData: return @"数据";
-        case WQPTypeDictionary: return @"字典";
-        case WQPTypeArray: return @"数组";
-        case WQPTypeUID: return @"引用";
+        case WQPTypeString: return WQLocalized(@"字符串");
+        case WQPTypeInteger: return WQLocalized(@"数字");
+        case WQPTypeReal: return WQLocalized(@"实数");
+        case WQPTypeBoolean: return WQLocalized(@"布尔值");
+        case WQPTypeDate: return WQLocalized(@"日期");
+        case WQPTypeData: return WQLocalized(@"数据");
+        case WQPTypeDictionary: return WQLocalized(@"字典");
+        case WQPTypeArray: return WQLocalized(@"数组");
+        case WQPTypeUID: return WQLocalized(@"引用");
         case WQPTypeUnknown: return @"?";
     }
     return @"?";
@@ -69,14 +69,14 @@ static NSISO8601DateFormatter *wqp_dates(void)
 static NSString *wqp_summary(id v)
 {
     switch (wqp_type(v)) {
-        case WQPTypeString: return WQPBoundedStringPreview(v);
+        case WQPTypeString: return WQLocalized(WQPBoundedStringPreview(v));
         case WQPTypeInteger: case WQPTypeReal: return [v stringValue];
-        case WQPTypeBoolean: return [v boolValue] ? @"是" : @"否";
+        case WQPTypeBoolean: return [v boolValue] ? WQLocalized(@"是") : WQLocalized(@"否");
         case WQPTypeDate: return [wqp_dates() stringFromDate:v];
-        case WQPTypeData: return [NSString stringWithFormat:@"%lu 字节 · %@", (unsigned long)[v length], wqp_hex(v, 24)];
-        case WQPTypeDictionary: return [NSString stringWithFormat:@"%lu 个键", (unsigned long)[v count]];
-        case WQPTypeArray: return [NSString stringWithFormat:@"%lu 个项目", (unsigned long)[v count]];
-        case WQPTypeUID: return @"键控归档引用";
+        case WQPTypeData: return WQLocalizedFormat(@"%lu 字节 · %@", (unsigned long)[v length], wqp_hex(v, 24));
+        case WQPTypeDictionary: return WQLocalizedFormat(@"%lu keys", (unsigned long)[v count]);
+        case WQPTypeArray: return WQLocalizedFormat(@"%lu items", (unsigned long)[v count]);
+        case WQPTypeUID: return WQLocalized(@"键控归档引用");
         case WQPTypeUnknown: return WQPBoundedStringPreview([v description]);
     }
     return @"";
@@ -110,9 +110,8 @@ static id wqp_default(WQPType t)
 
 static void wqp_alert(UIViewController *host, NSString *title, NSString *message)
 {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:message
-                                                         preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    UIAlertController *a = wq_alert_controller(title, message, UIAlertControllerStyleAlert);
+    [a addAction:wq_alert_action(@"好", UIAlertActionStyleDefault, nil)];
     [host presentViewController:a animated:YES completion:nil];
 }
 
@@ -153,7 +152,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         _doc.readOnly = readOnly;
         _doc.edit = [WQEditState new];
         _isRoot = YES;
-        _status = @"加载中…";
+        _status = WQLocalized(@"加载中…");
         self.title = path.lastPathComponent;
     }
     return self;
@@ -202,7 +201,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         NSDictionary *version = wq_file_version(path);
         if (data && (!before || ![before isEqualToDictionary:version])) {
             data = nil;
-            error = @"读取过程中文件已改变，请重新打开。";
+            error = WQLocalized(@"读取过程中文件已改变，请重新打开。");
         }
         NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
         NSError *parseError = nil;
@@ -212,8 +211,8 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         dispatch_async(dispatch_get_main_queue(), ^{
             self.doc.version = version;
             if (!root) {
-                self.status = data ? [NSString stringWithFormat:@"不是属性列表：%@", parseError.localizedDescription]
-                                   : (wq_permission_hint(path, NO) ?: [NSString stringWithFormat:@"无法读取此文件：%@", error]);
+                self.status = data ? WQLocalizedFormat(@"不是属性列表：%@", parseError.localizedDescription)
+                                   : (wq_permission_hint(path, NO) ?: WQLocalizedFormat(@"无法读取此文件：%@", error));
             } else if (![root isKindOfClass:NSMutableDictionary.class] && ![root isKindOfClass:NSMutableArray.class]) {
                 // A plist whose root is a single value: wrap it for display only.
                 self.doc.format = format;
@@ -260,7 +259,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 {
     NSMutableArray *items = [NSMutableArray array];
     if (!self.doc.readOnly && self.container) {
-        UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithTitle:@"保存" style:wq_primary_button_style()
+        UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"保存") style:wq_primary_button_style()
                                                                 target:self action:@selector(save)];
         save.enabled = self.doc.edit.dirty && !self.doc.edit.saving;
         [items addObject:save];
@@ -272,16 +271,16 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     NSMutableArray *menu = [NSMutableArray array];
     __weak typeof(self) weakSelf = self;
     if (self.isArray && !self.doc.readOnly && !self.doc.edit.saving && self.container) {
-        [menu addObject:[UIAction actionWithTitle:self.tableView.editing ? @"完成排序" : @"重新排序"
+        [menu addObject:[UIAction actionWithTitle:WQLocalizedNullable(self.tableView.editing ? @"完成排序" : @"重新排序")
                                             image:[UIImage systemImageNamed:@"arrow.up.arrow.down"] identifier:nil
                                           handler:^(UIAction *__unused a) {
             [weakSelf.tableView setEditing:!weakSelf.tableView.editing animated:YES];
             [weakSelf updateBar];
         }]];
     }
-    if (self.openAsText) [menu addObject:[UIAction actionWithTitle:@"以 XML 文本打开" image:[UIImage systemImageNamed:@"doc.plaintext"]
+    if (self.openAsText) [menu addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"以 XML 文本打开") image:[UIImage systemImageNamed:@"doc.plaintext"]
                                                          identifier:nil handler:^(UIAction *__unused a) { [weakSelf leaveThen:weakSelf.openAsText]; }]];
-    if (self.openAsHex) [menu addObject:[UIAction actionWithTitle:@"在十六进制查看器中打开" image:[UIImage systemImageNamed:@"number"]
+    if (self.openAsHex) [menu addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"在十六进制查看器中打开") image:[UIImage systemImageNamed:@"number"]
                                                         identifier:nil handler:^(UIAction *__unused a) { [weakSelf leaveThen:weakSelf.openAsHex]; }]];
     if (menu.count)
         [items addObject:[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
@@ -325,13 +324,12 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         if (then) then();
     };
     if (!self.doc.edit.dirty) { go(); return; }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"放弃更改？"
-        message:@"对此属性列表的修改尚未保存。" preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"放弃" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused x) {
+    UIAlertController *a = wq_alert_controller(@"放弃更改？", @"对此属性列表的修改尚未保存。", UIAlertControllerStyleAlert);
+    [a addAction:wq_alert_action(@"继续编辑", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(@"放弃", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused x) {
         [self.doc.edit discard];
         go();
-    }]];
+    })];
     [self presentViewController:a animated:YES completion:nil];
 }
 
@@ -340,13 +338,12 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 {
     if ([self blockWhileSaving]) return;
     if (!self.doc.edit.dirty) { proceed(); return; }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"放弃更改？"
-        message:@"对此属性列表的修改尚未保存。" preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"继续编辑" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"放弃" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused x) {
+    UIAlertController *a = wq_alert_controller(@"放弃更改？", @"对此属性列表的修改尚未保存。", UIAlertControllerStyleAlert);
+    [a addAction:wq_alert_action(@"继续编辑", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(@"放弃", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused x) {
         [self.doc.edit discard];
         proceed();
-    }]];
+    })];
     [self presentViewController:a animated:YES completion:nil];
 }
 
@@ -362,13 +359,10 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         wqp_alert(self, @"无法安全保存", @"当前文件版本不可用，请重新打开文件后再保存。");
         return;
     }
-    NSString *fmt = WQPlistFormatName(doc.format);
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"保存更改？"
-        message:[NSString stringWithFormat:@"%@ 将被就地覆盖（%@ 格式），当前版本会先备份。",
-                 doc.path, fmt]
-        preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused x) {
+    NSString *fmt = WQLocalized(WQPlistFormatName(doc.format));
+    UIAlertController *a = wq_alert_controller(@"保存更改？", WQLocalizedFormat(@"%@ 将被就地覆盖（%@ 格式），当前版本会先备份。", doc.path, fmt), UIAlertControllerStyleAlert);
+    [a addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(@"保存", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused x) {
         NSUInteger savedRevision = [doc.edit beginSave];
         NSDictionary *expectedVersion = [doc.version copy];
         NSString *path = [doc.path copy];
@@ -389,12 +383,11 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
                                                                                     options:0
                                                                                       error:&serializationError] : nil;
             if (!snapshot) {
-                writeError = copyError ?: @"编辑后的属性列表包含不支持的值。";
+                writeError = copyError ?: WQLocalized(@"编辑后的属性列表包含不支持的值。");
             } else if (!data) {
-                writeError = serializationError.localizedDescription ?: @"编辑后的属性列表无效。";
+                writeError = serializationError.localizedDescription ?: WQLocalized(@"编辑后的属性列表无效。");
             } else if (!WQPSerializedDataWithinLimit(data)) {
-                writeError = [NSString stringWithFormat:@"序列化后的属性列表过大（上限 %lu MiB）。",
-                              (unsigned long)(WQPMaxSerializedBytes / (1024 * 1024))];
+                writeError = WQLocalizedFormat(@"序列化后的属性列表过大（上限 %lu MiB）。", (unsigned long)(WQPMaxSerializedBytes / (1024 * 1024)));
             } else {
                 NSError *validationError = nil;
                 id check = [NSPropertyListSerialization propertyListWithData:data
@@ -402,7 +395,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
                                                                          format:NULL
                                                                           error:&validationError];
                 if (!check) {
-                    writeError = validationError.localizedDescription ?: @"无法校验序列化后的属性列表。";
+                    writeError = validationError.localizedDescription ?: WQLocalized(@"无法校验序列化后的属性列表。");
                 } else {
                     ok = wq_write_if_unchanged_get_version(path, data, expectedVersion, &savedVersion, &writeError);
                 }
@@ -433,7 +426,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
                 }
             });
         });
-    }]];
+    })];
     [self presentViewController:a animated:YES completion:nil];
 }
 
@@ -456,31 +449,17 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     return self.status ? 0 : (NSInteger)[self.container count];
 }
 
-- (NSString *)plistFooterText
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (self.status) return self.status;
     if (!self.isRoot) return nil;
-    NSString *fmt = WQPlistFormatName(self.doc.format);
+    NSString *fmt = WQLocalized(WQPlistFormatName(self.doc.format));
     if (self.doc.readOnly) {
-        NSString *reason = WQPlistFormatIsWritable(self.doc.format) ? @"只读" : @"只读 · 不支持写入";
-        return [NSString stringWithFormat:@"%@ 属性列表 · %@", fmt, reason];
+        NSString *reason = WQPlistFormatIsWritable(self.doc.format) ? WQLocalized(@"只读") : WQLocalized(@"只读 · 不支持写入");
+        return WQLocalizedFormat(@"%@ 属性列表 · %@", fmt, reason);
     }
-    return [NSString stringWithFormat:@"%@ 属性列表。点击值可编辑，左滑可删除或重命名，点 + 可添加。", fmt];
+    return WQLocalizedFormat(@"%@ 属性列表。点击值可编辑，左滑可删除或重命名，点 + 可添加。", fmt);
 }
-- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section
-{
-    return wq_table_text_header([self plistFooterText], tableView.bounds.size.width, NO);
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
-{
-    CGSize size = [[self tableView:tableView viewForFooterInSection:section]
-        systemLayoutSizeFittingSize:CGSizeMake(tableView.bounds.size.width, 0)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-        verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    return size.height;
-}
-
 
 - (id)keyAt:(NSInteger)row
 {
@@ -509,8 +488,8 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
     id value = [self valueAt:indexPath.row];
     WQPType t = wqp_type(value);
-    c.text = self.isArray ? [NSString stringWithFormat:@"项目 %ld", (long)indexPath.row] : [self keyAt:indexPath.row];
-    c.secondaryText = [NSString stringWithFormat:@"%@ · %@", wqp_type_name(t), wqp_summary(value)];
+    c.text = self.isArray ? WQLocalizedFormat(@"项目 %ld", (long)indexPath.row) : [self keyAt:indexPath.row];
+    c.secondaryText = WQLocalizedFormat(@"%@ · %@", wqp_type_name(t), wqp_summary(value));
     c.secondaryTextProperties.numberOfLines = 3;
     c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
     if (t == WQPTypeDictionary || t == WQPTypeArray) {
@@ -544,7 +523,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     if (self.doc.edit.saving) return;
     id value = [self valueAt:indexPath.row];
     WQPType t = wqp_type(value);
-    NSString *name = self.isArray ? [NSString stringWithFormat:@"项目 %ld", (long)indexPath.row] : [self keyAt:indexPath.row];
+    NSString *name = self.isArray ? WQLocalizedFormat(@"项目 %ld", (long)indexPath.row) : [self keyAt:indexPath.row];
     if (t == WQPTypeDictionary || t == WQPTypeArray) {
         WQPlistEditorViewController *child = [[WQPlistEditorViewController alloc] initWithDocument:self.doc container:value title:name];
         [self.navigationController pushViewController:child animated:YES];
@@ -577,15 +556,13 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     }
     NSString *hint = nil;
     switch (t) {
-        case WQPTypeInteger: hint = @"整数"; break;
-        case WQPTypeReal: hint = @"数字"; break;
-        case WQPTypeDate: hint = @"ISO 8601，例如 2026-11-09T15:00:00Z"; break;
-        case WQPTypeData: hint = @"十六进制字节，例如 01 ab ff"; break;
+        case WQPTypeInteger: hint = WQLocalized(@"整数"); break;
+        case WQPTypeReal: hint = WQLocalized(@"数字"); break;
+        case WQPTypeDate: hint = WQLocalized(@"ISO 8601，例如 2026-11-09T15:00:00Z"); break;
+        case WQPTypeData: hint = WQLocalized(@"十六进制字节，例如 01 ab ff"); break;
         default: break;
     }
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
-                                                                message:[wqp_type_name(t) stringByAppendingString:hint ? [@" · " stringByAppendingString:hint] : @""]
-                                                         preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *a = wq_alert_controller(title, [wqp_type_name(t) stringByAppendingString:hint ? [@" · " stringByAppendingString:hint] : @""], UIAlertControllerStyleAlert);
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.text = wqp_scalar_text(current, t);
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -594,8 +571,8 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         if (t == WQPTypeInteger) f.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
         if (t == WQPTypeReal) f.keyboardType = UIKeyboardTypeDecimalPad;
     }];
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"设定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
+    [a addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(@"设定", UIAlertActionStyleDefault, ^(UIAlertAction *__unused x) {
         NSString *text = a.textFields.firstObject.text ?: @"";
         id value = nil;
         if (t != WQPTypeData && !WQPStringInputWithinLimit(text)) {
@@ -632,9 +609,9 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
             }
             default: break;
         }
-        if (!value) { wqp_alert(self, @"不是有效的值", [NSString stringWithFormat:@"期望：%@", hint ?: wqp_type_name(t)]); return; }
+        if (!value) { wqp_alert(self, @"不是有效的值", WQLocalizedFormat(@"期望：%@", hint ?: wqp_type_name(t))); return; }
         done(value);
-    }]];
+    })];
     [self presentViewController:a animated:YES completion:nil];
 }
 
@@ -643,14 +620,13 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 - (void)add
 {
     if (self.doc.readOnly || self.doc.edit.saving) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"添加" message:@"新值的类型"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *sheet = wq_alert_controller(@"添加", @"新值的类型", UIAlertControllerStyleActionSheet);
     for (WQPType t = WQPTypeString; t <= WQPTypeArray; t++) {
-        [sheet addAction:[UIAlertAction actionWithTitle:wqp_type_name(t) style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
+        [sheet addAction:wq_alert_action(wqp_type_name(t), UIAlertActionStyleDefault, ^(UIAlertAction *__unused x) {
             [self addValueOfType:t];
-        }]];
+        })];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
     sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.count > 1
         ? self.navigationItem.rightBarButtonItems[1] : self.navigationItem.rightBarButtonItems.firstObject;
     [self presentViewController:sheet animated:YES completion:nil];
@@ -677,29 +653,29 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         [self editValueOfType:t current:value title:key ?: @"新项目" done:put];
     };
     if (self.isArray) { insert(nil); return; }
-    [self askKey:nil title:@"键" done:insert];
+    [self askKey:nil title:WQLocalizedNullable(@"键") done:insert];
 }
 
 - (void)askKey:(NSString *)current title:(NSString *)title done:(void (^)(NSString *key))done
 {
     if (self.doc.readOnly || self.doc.edit.saving) return;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:nil preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *a = wq_alert_controller(title, nil, UIAlertControllerStyleAlert);
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.text = current;
-        f.placeholder = @"键";
+        f.placeholder = WQLocalizedNullable(@"键");
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
         f.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused x) {
+    [a addAction:wq_alert_action(@"取消", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(@"好", UIAlertActionStyleDefault, ^(UIAlertAction *__unused x) {
         NSString *key = a.textFields.firstObject.text ?: @"";
         if (key.length == 0) return;
         if (![key isEqualToString:current] && self.container[key]) {
-            wqp_alert(self, @"键已存在", [NSString stringWithFormat:@"已存在名为「%@」的键。", key]);
+            wqp_alert(self, @"键已存在", WQLocalizedFormat(@"已存在名为「%@」的键。", key));
             return;
         }
         done(key);
-    }]];
+    })];
     [self presentViewController:a animated:YES completion:nil];
 }
 
@@ -708,7 +684,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 {
     if (self.doc.readOnly || self.doc.edit.saving) return nil;
     NSInteger row = indexPath.row;
-    UIContextualAction *del = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"删除"
+    UIContextualAction *del = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:WQLocalizedNullable(@"删除")
         handler:^(UIContextualAction *__unused action, UIView *__unused view, void (^completion)(BOOL)) {
         if (self.doc.readOnly || self.doc.edit.saving) { completion(NO); return; }
         if (self.isArray) [self.container removeObjectAtIndex:(NSUInteger)row];
@@ -717,11 +693,11 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         completion(YES);
     }];
     if (self.isArray) return [UISwipeActionsConfiguration configurationWithActions:@[del]];
-    UIContextualAction *rename = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:@"重命名"
+    UIContextualAction *rename = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:WQLocalizedNullable(@"重命名")
         handler:^(UIContextualAction *__unused action, UIView *__unused view, void (^completion)(BOOL)) {
         if (self.doc.readOnly || self.doc.edit.saving) { completion(NO); return; }
         NSString *old = self.keys[(NSUInteger)row];
-        [self askKey:old title:@"重命名键" done:^(NSString *key) {
+        [self askKey:old title:WQLocalizedNullable(@"重命名键") done:^(NSString *key) {
             if (self.doc.readOnly || self.doc.edit.saving) return;
             if ([key isEqualToString:old]) return;
             id v = self.container[old];

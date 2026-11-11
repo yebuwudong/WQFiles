@@ -34,17 +34,18 @@ compile_run() {
 
 compile_run WQCoreTests WQCore.m tests/WQCoreTests.m
 compile_run WQAccessSafetyTests tests/WQAccessSafetyTests.m
-compile_run WQAccessMutationTests tests/WQAccessMutationTests.m WQCore.m
-compile_run WQAccessTreeTests tests/WQAccessTreeTests.m WQCore.m
-compile_run WQAccessMeasureTests tests/WQAccessMeasureTests.m WQCore.m
-compile_run WQAccessCopyTests tests/WQAccessCopyTests.m WQCore.m
-compile_run WQAppsCopyTests tests/WQAppsCopyTests.m WQCore.m
+compile_run WQAccessMutationTests WQLocalization.m tests/WQAccessMutationTests.m WQCore.m
+compile_run WQAccessTreeTests WQLocalization.m tests/WQAccessTreeTests.m WQCore.m
+compile_run WQAccessMeasureTests WQLocalization.m tests/WQAccessMeasureTests.m WQCore.m
+compile_run WQAccessCopyTests WQLocalization.m tests/WQAccessCopyTests.m WQCore.m
+compile_run WQAppsCopyTests WQLocalization.m tests/WQAppsCopyTests.m WQCore.m
 compile_run WQAppsSupportTests tests/WQAppsSupportTests.m
 compile_run WQCacheSafetyTests tests/WQCacheSafetyTests.m
 compile_run WQPlistEditorSupportTests tests/WQPlistEditorSupportTests.m
 compile_run WQHexViewerHelpersTests tests/WQHexViewerHelpersTests.m
-compile_run WQArchiveTests WQArchive.m tests/WQArchiveTests.m -lz
-compile_run WQLaunchServicesTests -DWQ_LS_TESTING WQLaunchServices.m tests/WQLaunchServicesTests.m
+compile_run WQArchiveTests WQArchive.m WQLocalization.m tests/WQArchiveTests.m -lz
+compile_run WQSyntaxTests WQSyntax.m tests/WQSyntaxTests.m
+compile_run WQLaunchServicesTests -DWQ_LS_TESTING WQLaunchServices.m WQLocalization.m tests/WQLaunchServicesTests.m
 
 printf '\n== Python release and static UI checks ==\n'
 python3 -m unittest discover -s tests -p 'test_*.py' -v > "$OUT/python-tests.log" 2>&1 || {
@@ -58,7 +59,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     printf '\n== Strict iOS arm64 syntax/link checks ==\n'
     IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
     MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Info.plist)
-    SOURCES=(WQCore.m WQAccess.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQArchive.m main.m)
+    SOURCES=(WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQArchive.m WQSyntax.m main.m)
     FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -Wall -Wextra -Werror -O2)
     xcrun --sdk iphoneos clang -fsyntax-only "${FLAGS[@]}" "${SOURCES[@]}" > "$OUT/ios-syntax.log" 2>&1 || {
         cat "$OUT/ios-syntax.log" >&2

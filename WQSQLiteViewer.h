@@ -2,11 +2,10 @@
 //  WQSQLiteViewer.h
 //  WQ Files
 //
-//  Read-only SQLite viewer: tables and views, rows, single-row details,
-//  read-only SQL queries and CSV export. Works on a private copy of the
-//  database (and its -wal file) in WQ Files' temporary folder, so the app's
-//  own files are never opened for writing and no journal files appear in its
-//  container.
+//  SQLite viewer and editor: tables and views, rows, single-row details,
+//  SQL queries and CSV export. Works on a private copy of the database (and
+//  its -wal file) in WQ Files' temporary folder. Edit changes that copy; only
+//  Save writes it back over the app's database (see WQSQLiteSave.h).
 //
 
 #import <UIKit/UIKit.h>
@@ -15,6 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface WQSQLiteViewController : UITableViewController
 - (instancetype)initWithPath:(NSString *)path;
+// readOnly: no Edit (backups, read-only places).
+- (instancetype)initWithPath:(NSString *)path readOnly:(BOOL)readOnly;
 @end
 
 // Whether the first bytes of a file are an SQLite 3 header.

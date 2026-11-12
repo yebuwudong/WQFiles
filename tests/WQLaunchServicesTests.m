@@ -130,6 +130,7 @@ static void PutString(NSMutableData *data, NSUInteger offset, uint32_t sid, NSSt
 static NSString *const kAppPath = @"/private/var/mobile/Containers/Data/Application/4CE791DB-6B04-4A39-8F59-AF32BA61D494";
 static NSString *const kPluginPath = @"/private/var/mobile/Containers/Data/PluginKitPlugin/42D859EB-1323-451C-88F6-01AEE4F45958";
 static NSString *const kSharedPath = @"/private/var/mobile/Containers/Data/PluginKitPlugin/051B043F-07C6-4AB6-9B43-F70BFA8B1A81";
+static NSString *const kBundleContainer = @"/private/var/containers/Bundle/Application/9A1E2B4C-8D3F-4E5A-B6C7-D8E9F0A1B2C3";
 
 // Bundle record: +0x0c id, +0x68 container path, +0x6c name, +0x74 display
 // name. Plugin records (0x118 bytes): +0x00 id, +0x54 container path.
@@ -143,6 +144,7 @@ static NSData *StoreWithContainers(void)
     Put32(data, bundle + 8 + 0x68, 2u << 2);
     Put32(data, bundle + 8 + 0x6c, 3u << 2);
     Put32(data, bundle + 8 + 0x74, 3u << 2);
+    Put32(data, bundle + 8 + 0x00, 8u << 2);   // .app path (stored with /var/ and a trailing slash)
     Put32(data, plugin + 4, 0x118);
     Put32(data, plugin + 8 + 0x00, 4u << 2);
     Put32(data, plugin + 8 + 0x54, 5u << 2);
@@ -160,6 +162,7 @@ static NSData *StoreWithContainers(void)
     PutString(data, 0x1200, 5, kPluginPath);                    // 88 bytes
     PutString(data, 0x1280, 6, kSharedPath);
     PutString(data, 0x1300, 7, @"com.example.other");
+    PutString(data, 0x1380, 8, [[kBundleContainer substringFromIndex:8] stringByAppendingString:@"/Example.app/"]);
     return data;
 }
 
@@ -172,6 +175,12 @@ static void TestContainerMapping(NSString *path)
     WQCheck([wq_bundle_id_for_container(kPluginPath) isEqualToString:@"com.example.app.widget"]);
     WQCheck(wq_bundle_id_for_container(kSharedPath) == nil);
     WQCheck(wq_bundle_id_for_container(@"/private/var/mobile/Containers/Data/Application/not-a-uuid") == nil);
+    // App bundle containers: the folder holding the .app maps to its app.
+    WQCheck([wq_bundle_path_for_id(@"com.example.app") isEqualToString:[kBundleContainer stringByAppendingString:@"/Example.app"]]);
+    WQCheck([wq_bundle_id_for_container(kBundleContainer) isEqualToString:@"com.example.app"]);
+    WQCheck([wq_bundle_id_for_container([kBundleContainer substringFromIndex:8]) isEqualToString:@"com.example.app"]);
+    WQCheck([wq_ls_bundle_containers() isEqualToArray:@[kBundleContainer]]);
+    WQCheck(wq_bundle_id_for_container([kBundleContainer stringByAppendingString:@"/Example.app"]) == nil);
     // A display name whose length is a multiple of 4 has no terminator.
     WQCheck([wq_display_name(@"com.example.app") isEqualToString:@"AppName8"]);
 }

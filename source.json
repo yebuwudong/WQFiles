@@ -21,6 +21,33 @@
       "category": "utilities",
       "versions": [
         {
+          "version": "0.9.3",
+          "buildVersion": "59",
+          "date": "2026-11-11",
+          "size": 559984,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.3/WQFiles.ipa",
+          "localizedDescription": "New: startup check (stops with what failed instead of empty lists when access breaks), Recently Deleted under Backups. Cache Cleaner progress bar.",
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "0.9.2",
+          "buildVersion": "52",
+          "date": "2026-11-11",
+          "size": 535984,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.2/WQFiles.ipa",
+          "localizedDescription": "New: edit SQLite databases (Edit, then Save writes back with a backup and integrity check). Korean translation. Fixed: Arabic corrections, empty app lists after an iOS update.",
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "0.9.1",
+          "buildVersion": "50",
+          "date": "2026-11-11",
+          "size": 493734,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.1/WQFiles.ipa",
+          "localizedDescription": "Now in Simplified Chinese, Arabic, German, Italian and Spanish, with a Language setting. New: Import as Backup, Keep Data Before Restore, media streams instead of copying, offloaded apps and App Bundles (iOS 27). Apps and the Cache Cleaner reopen instantly.",
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "0.9",
           "buildVersion": "38",
           "date": "2026-11-11",

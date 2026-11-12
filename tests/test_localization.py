@@ -25,7 +25,23 @@ def read_table(path: Path) -> dict[str, str]:
     return entries
 
 
+LANGUAGES = ("zh-Hans", "de", "ar", "it", "es", "ko")
+# Embeddings, overrides and isolates can hide or reorder text; the plain
+# LRM/RLM marks are allowed (Arabic uses LRM before a path like /private/var).
+BIDI_CONTROLS = re.compile("[\u202a-\u202e\u2066-\u2069]")
+
+
 class LocalizationTests(unittest.TestCase):
+    def test_every_language_matches_english(self):
+        english = read_table(ROOT / "en.lproj/Localizable.strings")
+        for language in LANGUAGES:
+            table = read_table(ROOT / f"{language}.lproj/Localizable.strings")
+            self.assertEqual(set(english), set(table), language)
+            for key, value in table.items():
+                self.assertEqual(PLACEHOLDER.findall(key), PLACEHOLDER.findall(value), f"{language}: {key}")
+                self.assertTrue(value.strip() or not key.strip(), f"{language}: empty value for {key}")
+                self.assertIsNone(BIDI_CONTROLS.search(value), f"{language}: direction control in {key}")
+
     def test_language_tables_have_identical_keys(self):
         english = read_table(ROOT / "en.lproj/Localizable.strings")
         chinese = read_table(ROOT / "zh-Hans.lproj/Localizable.strings")
@@ -82,7 +98,7 @@ class LocalizationTests(unittest.TestCase):
 
     def test_bundle_and_build_declare_localizations(self):
         info = plistlib.loads((ROOT / "Info.plist").read_bytes())
-        self.assertEqual(set(info["CFBundleLocalizations"]), {"en", "zh-Hans"})
+        self.assertEqual(set(info["CFBundleLocalizations"]), {"en", *LANGUAGES})
         build = (ROOT / "build.sh").read_text(encoding="utf-8")
         self.assertIn('for lproj in "$ROOT"/*.lproj', build)
         self.assertIn('cp -R "$lproj" "$APP/"', build)

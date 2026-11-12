@@ -12,8 +12,9 @@ NS_ASSUME_NONNULL_BEGIN
 NSString *_Nullable wq_display_name(NSString *_Nullable bundleID);
 
 // Bundle id of an app or extension data container (/private/var/mobile/
-// Containers/Data/...), from the same LaunchServices database. For iOS 27.2,
-// where the containers' identifier attribute can't be read. Nil if unknown.
+// Containers/Data/...) or an app bundle container, from the same
+// LaunchServices database. For iOS 27.2, where the containers' identifier
+// attribute can't be read. Nil if unknown.
 NSString *_Nullable wq_bundle_id_for_container(NSString *path);
 
 // Whether the name database is loaded; loading it (blocking, off the main
@@ -30,5 +31,9 @@ NSArray<NSString *> *_Nullable wq_ls_container_paths(NSString *_Nullable storeHi
 // The .app bundle of an installed app, from the same database (for icons
 // where iOS won't hand them out). Nil if unknown.
 NSString *_Nullable wq_bundle_path_for_id(NSString *bundleID);
+// The app bundle containers (/private/var/containers/Bundle/Application/
+// <UUID>) of installed apps, from the same database; empty if unknown.
+// wq_bundle_id_for_container also labels these.
+NSArray<NSString *> *wq_ls_bundle_containers(void);
 
 NS_ASSUME_NONNULL_END

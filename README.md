@@ -16,12 +16,21 @@ app data, the Cache Cleaner and the file browser work as on iOS 27. App icons
 don't: iOS 26 hands WQ Files only placeholder icons and doesn't let it read
 other apps' bundles, so apps show symbol tiles.
 
+WQ Files is available in English, German, Italian, Spanish, Korean, Arabic
+and Simplified Chinese. It follows the device language; **Language** in WQ Files'
+Settings picks another, used from the next start.
+
 ## What it opens
 
 - **App Data**: every app's data container (`Containers/Data/Application`),
   shown with the app's name, bundle ID and icon instead of a UUID.
 - **App Groups**: shared group containers.
 - **Extension Data** and **Internal Daemons**.
+- **App Bundles**: each installed app's bundle container
+  (`/var/containers/Bundle/Application`) with its `.app`, labeled with the
+  app's name; also from Apps: long-press an app → **Open App Bundle**. Shown
+  only where iOS lets WQ Files open these folders (the startup check tries;
+  iOS 26 and 27.0.1 don't).
 - **System Data**: `/var/containers/Data/System` (listing only; its contents
   are owned by root).
 - **System Groups**: the parent cannot be listed on 27.0.1, so known container
@@ -43,8 +52,13 @@ new files.
 - **Apps**: every app with its data size. Back up an app's **Documents and
   Library**, restore the latest backup (also from **App Backups**: long-press the app → Restore Backup), clear its data (Documents, Library,
   and tmp), open its folder, or share a backup as a ZIP over AirDrop, Files,
-  Mail and so on. Show all apps, only Apple's, only others or only backed-up
-  ones; long-press to copy the bundle ID or container path. `tmp` is intentionally ephemeral: clear removes it, but app
+  Mail and so on. **Import as Backup…** (tap an app) turns a folder or ZIP with
+  `Documents`/`Library` (another device's shared backup, another tool's export)
+  into a normal verified backup of that app, ready to restore; data that says
+  it belongs to a different app asks first. Show all apps, only Apple's, only others, only backed-up
+  ones, or only installed or offloaded ones (when nearly every app's state can be read); long-press to copy the bundle ID or container path.
+  Apps and the Cache Cleaner keep their list between visits and rescan on
+  their own after 10 minutes; pull down to rescan any time. `tmp` is intentionally ephemeral: clear removes it, but app
   backups do not include it and restore leaves the current `tmp` untouched.
 - **Cache Cleaner**: cache and temp size per app, with search, Select All /
   None / Large Caches (50 MB+) and crash logs. Long-press an app to jump to its
@@ -69,12 +83,20 @@ new files.
   - **Hex viewer and editor**: any file size (read in pages), go to offset,
     find hex bytes or text, overwrite bytes in place. Changed bytes are
     highlighted until saved; the file size never changes.
-  - **SQLite viewer** (read-only): tables and views with row counts, rows,
-    single rows in full, read-only SQL queries and CSV export. It works on a
-    copy of the database and its `-wal` file, so the app's own files are never
-    changed; close the app first for an up-to-date copy.
+  - **SQLite viewer and editor**: tables and views with row counts, rows,
+    single rows in full, SQL queries and CSV export. It works on a copy of the
+    database and its `-wal` file; close the app first for an up-to-date copy.
+    **Edit** changes that copy: tap a value in a row to change it, swipe a row
+    to delete it, or run any SQL. **Save** writes the copy back to the app:
+    force-quit the app first (WQ Files can't tell whether it's running). Before
+    writing, WQ Files checks the copy with SQLite's integrity check and refuses
+    if the app changed the database since it was opened; the previous
+    database goes to Backups, and the app's old `-wal`/`-shm` are emptied so
+    SQLite doesn't replay them over the new file.
   - **Media player**: audio and video (mp3, m4a, wav, mp4, mov…) play in the
-    system player. The file is copied to WQ Files' temporary folder first.
+    system player. WQ Files streams the file to the player itself, so playback
+    starts right away; formats that can't stream this way (or a stream that
+    fails) are copied to WQ Files' temporary folder first.
   - **Text and images**: text is editable, images render, plists can also be
     edited as XML text. Code and data files get syntax colors (XML/plist,
     JSON, YAML, INI/TOML, CSS, SQL, Markdown, C/Objective-C, Swift,
@@ -86,6 +108,9 @@ new files.
 - **Show Item Counts** (start screen, off by default): folders show how many
   items they hold. Every subfolder is listed for this, which slows down
   folders with many subfolders.
+- **Keep Data Before Restore** (start screen, on by default): restoring an app
+  backup or a file backup first backs up what's there now, so a failed restore
+  can be undone. Turn it off to delete that backup once the restore succeeded.
 
 App names come from LaunchServices' own database, read from lsd's container
 (the LaunchServices API itself refuses this app on 27.x). Apple services that
@@ -96,7 +121,10 @@ symbol tile.
 
 Before a regular file is overwritten or deleted, its contents are copied to
 **Backups** inside the app (also reachable in the Files app). Long-press a
-backup to restore it to its original location. In the file browser only empty
+backup to restore it to its original location. **Recently Deleted** (under
+Backups on the start screen) lists the backed-up files whose original is gone,
+newest first: restore one to where it was (missing folders are created), or
+delete it from Backups for good. In the file browser only empty
 folders can be deleted; symbolic links are removed as links. Clearing an app's
 data and cleaning caches delete without a file-by-file backup; Apps offers to
 back up Documents and Library first, while `tmp` is discarded and cannot be
@@ -124,6 +152,15 @@ Editing another app's or the system's files can break things. Keep the backups
 and only change what you understand.
 
 ## Troubleshooting
+
+- **Startup check**: while the start screen is up, WQ Files checks in the
+  background the App Group, whether it finds other apps' folders, whether its
+  sandbox access really opens a sample of them, and whether the app database
+  identifies them. A new iOS version can break any of these; instead of empty
+  or wrong lists, WQ Files then covers everything with what failed (Try Again,
+  Log, Continue Anyway). Problems that
+  leave it partly usable (app names, an untested iOS version) are shown once as
+  a warning. The result is in **Log** as `health: …`.
 
 - **Apps list is empty**: the Apps screen depends on a full `fsgetpath` scan of
   the data volume. A missing/denied container parent, an unavailable inode
@@ -217,11 +254,38 @@ issue sandbox tokens or mutate installed app containers. Real iOS signing,
 token issuance, navigation/lifecycle timing, power-loss behavior and app-side
 concurrent writes still require supported-device validation.
 
+## Translations
+
+WQ Files is in English, German, Italian, Spanish, Korean, Arabic and
+Simplified Chinese. New languages and corrections are welcome as pull requests:
+
+- **Correct a translation:** edit the line in `<language>.lproj/Localizable.strings`
+  (for example `it.lproj`). The English text on the left is the key; change
+  only the text on the right.
+- **Add a language:** copy `en.lproj` to a folder named with the language code
+  (`fr.lproj`, `pt-BR.lproj`…), translate the right-hand side, and add the code
+  to `CFBundleLocalizations` in `Info.plist` and to `LANGUAGES` in
+  `tests/test_localization.py`. The language then appears in WQ Files'
+  Language setting by itself.
+- Keep every placeholder (`%@`, `%lu`, `%.1f`…) in the same order as in the
+  English text, and leave paths, file names and `WQ Files` as they are.
+  `python3 -m unittest tests.test_localization` checks this.
+
+German, Italian and Spanish, and the newest Chinese, Arabic and Korean strings, are
+machine translations so far: corrections from native speakers are especially
+welcome.
+
 ## Credit and license
 
 - Sandbox technique: [worse_query](https://github.com/forcequitOS/worse_query)
   by Taj C (forcequit), GPL-3.0-or-later. This app reimplements it.
 - Container enumeration with `fsgetpath`: from
   [KAMUI](https://github.com/murk-sus/kamui-escape) by murk-sus.
+- Simplified Chinese translation: [iosrxwy](https://github.com/iosrxwy)
+  ([#38](https://github.com/kolbicz/WQFiles/pull/38)).
+- Arabic translation: [hfip](https://github.com/hfip)
+  ([#39](https://github.com/kolbicz/WQFiles/issues/39)).
+- Korean translation: [hooray804](https://github.com/hooray804)
+  ([#40](https://github.com/kolbicz/WQFiles/pull/40)).
 
 WQ Files is GPL-3.0-or-later (see `LICENSE`).

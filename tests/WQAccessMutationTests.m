@@ -55,6 +55,25 @@ int main(void)
             check(!wq_delete(backup, &error) && has(backup, @"original"), @"backup storage delete refused");
             check(wq_delete(file, &error) && ![fm fileExistsAtPath:file] && backups().count == 3, @"regular delete retains durable backup");
 
+            // Restore without keeping the replaced data: the write reports its
+            // backup unit, which can be deleted as a whole.
+            NSString *restoreFile = [base stringByAppendingPathComponent:@"restore-target"];
+            put(restoreFile, @"current");
+            NSString *restoreSource = [base stringByAppendingPathComponent:@"restore-source"];
+            put(restoreSource, @"from backup");
+            NSUInteger before = backups().count;
+            NSString *unit = nil;
+            check(wq_write_from_file_with_backup(restoreFile, restoreSource, &unit, &error) && has(restoreFile, @"from backup"),
+                  @"restore write succeeds");
+            check(unit && [unit.stringByDeletingLastPathComponent isEqual:WQCanonicalVarPath(wq_test_backup_root)] &&
+                  wq_backup_unit_deletable(unit) && backups().count == before + 1, @"restore write reports its backup unit");
+            check(has([unit stringByAppendingString:WQCanonicalVarPath(restoreFile)], @"current"), @"backup unit holds the replaced contents");
+            check(wq_delete_backup(unit, &error) && backups().count == before && has(restoreFile, @"from backup"),
+                  @"backup unit of a restore can be removed");
+            NSString *noUnit = @"unset";
+            check(!wq_write_from_file_with_backup(restoreFile, restoreFile, &noUnit, &error) && noUnit == nil,
+                  @"failed restore write reports no unit");
+
             check(wq_is_backup_storage_path(wq_test_backup_root), @"file backup root is protected");
             check(wq_is_backup_storage_path(wq_test_app_backup_root), @"app backup root is protected");
             NSString *appBackup = [[[wq_test_app_backup_root stringByAppendingPathComponent:@"com.example.app"]

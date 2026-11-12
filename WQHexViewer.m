@@ -80,6 +80,9 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 {
     [super viewDidLoad];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    // Offsets, hex and ASCII columns read left to right in every language
+    // (the rows are forced too, in cellForRow).
+    self.tableView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.rowHeight = 20;
     __weak typeof(self) weakSelf = self;
@@ -226,6 +229,8 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"h"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"h"];
+    cell.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    cell.contentView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     UIFont *font = self.rowFont;
     unsigned long long start = (unsigned long long)indexPath.row * _perRow;
     NSMutableAttributedString *line = [[NSMutableAttributedString alloc]

@@ -783,6 +783,32 @@ void wq_display_names_reset_miss(void)
     }
 }
 
+static NSString *const kWQBundleContainerRoot = @"/private/var/containers/Bundle/Application/";
+
+// App bundle containers (<root>/<UUID>, holding Name.app) -> bundle id, built
+// from the bundle paths; rebuilt when a new database snapshot is published.
+static NSDictionary<NSString *, NSString *> *wq_bundle_containers_locked(void)
+{
+    static NSDictionary *source, *map;
+    wq_load_ls_names_locked();
+    if (map && source == gLSBundlePaths) return map;
+    NSMutableDictionary *built = [NSMutableDictionary new];
+    [gLSBundlePaths enumerateKeysAndObjectsUsingBlock:^(NSString *bid, NSString *path, BOOL *__unused stop) {
+        if (![bid isKindOfClass:NSString.class] || ![path isKindOfClass:NSString.class]) return;
+        NSString *app = path.stringByStandardizingPath;
+        if ([app hasPrefix:@"/var/"]) app = [@"/private" stringByAppendingString:app];
+        if (![app hasPrefix:kWQBundleContainerRoot] || ![app.pathExtension isEqualToString:@"app"]) return;
+        NSString *container = app.stringByDeletingLastPathComponent;
+        // Only <root>/<UUID>/Name.app: extensions and nested apps stay out.
+        if (![container.stringByDeletingLastPathComponent isEqualToString:
+              [kWQBundleContainerRoot substringToIndex:kWQBundleContainerRoot.length - 1]]) return;
+        if (!built[container] || bid.length < [built[container] length]) built[container] = bid;
+    }];
+    source = gLSBundlePaths;
+    map = [built copy];
+    return map;
+}
+
 NSString *wq_bundle_id_for_container(NSString *path)
 {
     if (!path.length) return nil;
@@ -791,7 +817,15 @@ NSString *wq_bundle_id_for_container(NSString *path)
     @synchronized (wq_ls_lock()) {
         wq_load_ls_names_locked();
         NSString *bid = gLSContainers[key];
+        if (!bid && [key hasPrefix:kWQBundleContainerRoot]) bid = wq_bundle_containers_locked()[key];
         return [bid isKindOfClass:NSString.class] ? bid : nil;
+    }
+}
+
+NSArray<NSString *> *wq_ls_bundle_containers(void)
+{
+    @synchronized (wq_ls_lock()) {
+        return [wq_bundle_containers_locked().allKeys sortedArrayUsingSelector:@selector(compare:)];
     }
 }
 

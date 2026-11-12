@@ -54,6 +54,10 @@ BOOL wq_write_if_unchanged_get_version(NSString *path, NSData *data,
 // Same as wq_write / wq_create_file, but streamed from a local file (for large
 // files; nothing is held in memory). A failed create leaves no partial file.
 BOOL wq_write_from_file(NSString *path, NSString *source, NSString *_Nullable *_Nullable errorText);
+// As wq_write_from_file; *backupUnit gets the backup folder (Backups/<stamp>)
+// holding the previous contents, so a caller may remove it after success.
+BOOL wq_write_from_file_with_backup(NSString *path, NSString *source, NSString *_Nullable *_Nullable backupUnit,
+                                    NSString *_Nullable *_Nullable errorText);
 BOOL wq_create_file_from(NSString *path, NSString *source, NSString *_Nullable *_Nullable errorText);
 // Streams a regular file into a staged local path, then replaces the destination.
 // Same-file aliases are refused; failed streaming leaves the destination intact.

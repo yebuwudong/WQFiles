@@ -300,6 +300,18 @@ void wq_set_deleting_allowed(BOOL allowed)
     [NSUserDefaults.standardUserDefaults setBool:!allowed forKey:kWQDeletingDisabledPref];
 }
 
+static NSString *const kWQDiscardBeforeRestorePref = @"WQDiscardBeforeRestore";
+
+BOOL wq_keep_before_restore(void)
+{
+    return ![NSUserDefaults.standardUserDefaults boolForKey:kWQDiscardBeforeRestorePref];
+}
+
+void wq_set_keep_before_restore(BOOL keep)
+{
+    [NSUserDefaults.standardUserDefaults setBool:!keep forKey:kWQDiscardBeforeRestorePref];
+}
+
 BOOL wq_refuse_if_deleting_off(UIViewController *host)
 {
     if (wq_deleting_allowed()) return NO;

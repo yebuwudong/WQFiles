@@ -10,9 +10,13 @@
 #import "WQSharing.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
+#import "WQHealth.h"
 #import "WQCore.h"
 #import "WQAppsSupport.h"
+#import "WQArchive.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <errno.h>
+#import <sys/mount.h>
 #import <sys/stat.h>
 
 #pragma mark - Apps manager
@@ -28,8 +32,12 @@
 @property (nonatomic) dev_t containerDevice;
 @property (nonatomic) ino_t containerInode;
 @property (nonatomic, copy) NSArray<NSDictionary *> *backups;
+@property (nonatomic) NSInteger installState;   // WQInstallState
 @end
 @implementation WQAppItem
+@end
+
+@interface WQAppsViewController () <UIDocumentPickerDelegate>
 @end
 
 @implementation WQAppsViewController {
@@ -44,6 +52,8 @@
     NSArray<NSString *> *_indexTitles;
     NSDictionary<NSString *, NSNumber *> *_indexRows;
     NSString *_restoreBundleID;
+    WQAppItem *_importApp;
+    NSTimeInterval _lastScanFinished;
 }
 
 - (instancetype)initRestoringBundleID:(NSString *)bundleID
@@ -55,6 +65,74 @@
 static NSString *const kWQAppsSortByNamePref = @"WQAppsSortByName";
 // 0 all apps, 1 Apple's, 2 everyone else's, 3 apps with a backup.
 static NSString *const kWQAppsFilterPref = @"WQAppsFilter";
+// 4 installed, 5 offloaded (issue #28).
+
+typedef NS_ENUM(NSInteger, WQInstallState) { WQInstallUnknown = 0, WQInstallInstalled, WQInstallOffloaded };
+
+// An offloaded app keeps a placeholder bundle (Info.plist and icons) but its
+// executable is removed. The bundle path comes from the LaunchServices
+// database; *why gets the reason for the Log.
+static WQInstallState wq_app_install_state(NSString *bundleID, NSString **why)
+{
+    NSString *path = bundleID.length ? wq_bundle_path_for_id(bundleID) : nil;
+    if (!path.length) { *why = @"no bundle path: not in the app database"; return WQInstallUnknown; }
+    // Built-in apps live on the read-only system volume, which this app can't
+    // read; they can't be offloaded (removable Apple apps live in bundle
+    // containers like everyone else's).
+    if ([path hasPrefix:@"/Applications/"] || [path hasPrefix:@"/System/"]) {
+        *why = @"built-in: system volume";
+        return WQInstallInstalled;
+    }
+    // Checking whether a path exists works even where reading is refused
+    // (iOS 26): the program is almost always named like the bundle
+    // (Drive.app/Drive), so finding it there settles "installed" without
+    // Info.plist.
+    struct stat guessed;
+    NSString *guess = [path stringByAppendingPathComponent:path.lastPathComponent.stringByDeletingPathExtension];
+    if (lstat(guess.fileSystemRepresentation, &guessed) == 0 && S_ISREG(guessed.st_mode)) {
+        *why = @"installed: executable present";
+        return WQInstallInstalled;
+    }
+    NSString *plistPath = [path stringByAppendingPathComponent:@"Info.plist"];
+    // Installed apps' bundles refuse reading (iOS 26 and 27.0.1), while an
+    // offloaded app's placeholder bundle can be read. A plain read first (no
+    // Log line); a token only while tokens for bundles have ever helped.
+    NSError *plainError = nil;
+    NSData *data = [NSData dataWithContentsOfFile:plistPath options:0 error:&plainError];
+    int plainErrno = (int)[plainError.userInfo[NSUnderlyingErrorKey] code];
+    static NSInteger tokenAttempts, tokenSuccesses;
+    BOOL tryToken = NO;
+    @synchronized ([WQAppItem class]) { tryToken = !data && (tokenSuccesses > 0 || tokenAttempts < 3); }
+    NSString *readError = nil;
+    if (tryToken) {
+        data = (wq_grant(path.stringByDeletingLastPathComponent) || wq_grant(path)) ? wq_read(plistPath, 4 * 1024 * 1024, &readError) : nil;
+        @synchronized ([WQAppItem class]) { tokenAttempts++; if (data) tokenSuccesses++; }
+    }
+    id info = data ? [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:nil] : nil;
+    if (![info isKindOfClass:NSDictionary.class]) {
+        struct stat st;
+        BOOL bundleThere = lstat(path.fileSystemRepresentation, &st) == 0;
+        BOOL denied = plainErrno == EPERM || plainErrno == EACCES || plainError.code == NSFileReadNoPermissionError;
+        if (!data && bundleThere && denied) {
+            *why = [NSString stringWithFormat:@"refused: %@ can't be read", path.lastPathComponent];
+            return WQInstallUnknown;
+        }
+        *why = [NSString stringWithFormat:@"%@: %@ (%@)", data ? @"Info.plist not a dictionary" : @"Info.plist unreadable",
+                plistPath, data ? @"bad plist" : (readError ?: plainError.localizedDescription ?: @"no reason")];
+        if (!data && !bundleThere) *why = [*why stringByAppendingString:@", bundle not visible"];
+        return WQInstallUnknown;
+    }
+    NSString *executable = [info[@"CFBundleExecutable"] isKindOfClass:NSString.class] ? info[@"CFBundleExecutable"] : nil;
+    if (!executable.length || [executable containsString:@"/"]) { *why = @"no CFBundleExecutable: in Info.plist"; return WQInstallUnknown; }
+    NSString *exePath = [path stringByAppendingPathComponent:executable];
+    struct stat st;
+    if (lstat(exePath.fileSystemRepresentation, &st) == 0) { *why = @"installed: executable present"; return WQInstallInstalled; }
+    int err = errno;
+    if (wq_stat(exePath, &st)) { *why = @"installed: executable present"; return WQInstallInstalled; }
+    if (err == ENOENT) { *why = [NSString stringWithFormat:@"offloaded: %@ missing from %@", executable, path]; return WQInstallOffloaded; }
+    *why = [NSString stringWithFormat:@"executable unchecked: %@ (%s)", exePath, strerror(err)];
+    return WQInstallUnknown;
+}
 
 static BOOL wq_app_is_apple(WQAppItem *app)
 {
@@ -315,15 +393,18 @@ static BOOL wq_purge_and_verify(NSString *dir, unsigned long long *freed, NSStri
 
 // Copies the app's Documents and Library into a new complete backup. Returns
 // its path, or nil with *error (nothing is left behind then).
-static NSString *wq_make_app_backup(NSString *bundleID, NSString *container, dev_t expectedDevice,
-                                    ino_t expectedInode, NSString *reason, NSString **error)
+// Copies Documents and Library from `container` (an app's data container,
+// or for imports a local folder) into a new verified backup of bundleID.
+// `stillValid` (optional) re-checks the source before and after publishing.
+static NSString *wq_make_backup_from(NSString *bundleID, NSString *container, NSString *reason,
+                                     BOOL (^stillValid)(NSString **error), NSString **error)
 {
     if (!WQAppsSupportBundleIDValid(bundleID)) {
         if (error) *error = WQLocalized(@"The app identifier is not a valid bundle identifier");
         return nil;
     }
     NSFileManager *fm = NSFileManager.defaultManager;
-    if (!wq_validate_container(container, bundleID, expectedDevice, expectedInode, error)) return nil;
+    if (stillValid && !stillValid(error)) return nil;
     NSString *root = wq_app_backup_root_for_bundle(bundleID);
     if (!root.length) {
         if (error) *error = WQLocalized(@"Cannot locate the app backup folder");
@@ -398,7 +479,7 @@ static NSString *wq_make_app_backup(NSString *bundleID, NSString *container, dev
     }
     BOOL published = NO;
     if (ok) {
-        if (!wq_validate_container(container, bundleID, expectedDevice, expectedInode, error)) ok = NO;
+        if (stillValid && !stillValid(error)) ok = NO;
     }
     if (ok) {
         if (rename(staging.fileSystemRepresentation, final.fileSystemRepresentation) != 0) {
@@ -408,7 +489,7 @@ static NSString *wq_make_app_backup(NSString *bundleID, NSString *container, dev
             published = YES;
             NSString *validationError = nil;
             if (!wq_validate_backup(final, bundleID, NO, NULL, NULL, NULL, &validationError) ||
-                !wq_validate_container(container, bundleID, expectedDevice, expectedInode, &validationError)) {
+                (stillValid && !stillValid(&validationError))) {
                 ok = NO;
                 if (error) *error = validationError ?: WQLocalized(@"The app container changed while the backup was being finalized");
             }
@@ -421,6 +502,18 @@ static NSString *wq_make_app_backup(NSString *bundleID, NSString *container, dev
     }
     wq_log(@"app backup %@ -> %@ (%@)", bundleID, final.lastPathComponent, [parts componentsJoinedByString:@", "]);
     return final;
+}
+
+#pragma mark - Import as Backup
+
+static NSString *const kBackupReasonImported = @"Imported";
+
+static NSString *wq_make_app_backup(NSString *bundleID, NSString *container, dev_t expectedDevice,
+                                    ino_t expectedInode, NSString *reason, NSString **error)
+{
+    return wq_make_backup_from(bundleID, container, reason, ^BOOL(NSString **validationError) {
+        return wq_validate_container(container, bundleID, expectedDevice, expectedInode, validationError);
+    }, error);
 }
 
 static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellation,
@@ -467,7 +560,35 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    if (_scanning && _scanCancellation.isCancelled) [self scan];
+    if (_scanning && _scanCancellation.isCancelled) { [self scan]; return; }
+    if (_scanning || !_apps) return;
+    // The start screen keeps this screen between visits: rescan on its own
+    // only when the list is old (pull to refresh rescans any time). Backups
+    // may have been made or deleted elsewhere, so reread those (cheap).
+    if (NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 600.0) { [self scan]; return; }
+    [self refreshBackups];
+}
+
+- (void)refreshBackups
+{
+    NSArray<WQAppItem *> *apps = _apps;
+    NSUInteger generation = _scanGeneration;
+    dispatch_async(wq_io(), ^{
+        NSMutableArray *lists = [NSMutableArray arrayWithCapacity:apps.count];
+        for (WQAppItem *app in apps) [lists addObject:app.bundleID.length ? wq_app_backups(app.bundleID) : @[]];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self->_scanGeneration || self->_scanning) return;
+            BOOL changed = NO;
+            for (NSUInteger i = 0; i < apps.count; i++) {
+                if ([apps[i].backups isEqualToArray:lists[i]]) continue;
+                apps[i].backups = lists[i];
+                changed = YES;
+            }
+            if (!changed) return;
+            [self rebuildVisibleApps];
+            [self.tableView reloadData];
+        });
+    });
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -562,6 +683,9 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         NSMutableArray<WQAppItem *> *apps = [NSMutableArray new];
         NSMutableArray<NSString *> *refused = [NSMutableArray new];
         NSUInteger i = 0, missingLabels = 0, limited = 0, sizeLimited = 0;
+        NSUInteger installCounts[3] = {0}, installNotes = 0;
+        NSMutableDictionary<NSString *, NSNumber *> *installReasons = [NSMutableDictionary new];
+        NSMutableArray<WQAppItem *> *refusedBundles = [NSMutableArray new];
         for (NSString *c in containers) {
             if (cancellation.isCancelled) { WQAppScanStep(nil); return; }
             i++;
@@ -608,11 +732,39 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
             app.sizeKnown = sizeKnown;
             if (granted && hasIdentity && !sizeKnown) sizeLimited++;
             app.backups = bid.length ? wq_app_backups(bid) : @[];
+            NSString *why = nil;
+            app.installState = bid.length ? wq_app_install_state(bid, &why) : WQInstallUnknown;
+            installCounts[app.installState]++;
+            NSString *reasonKind = [why componentsSeparatedByString:@":"].firstObject ?: @"no identifier";
+            if ([reasonKind isEqualToString:@"refused"]) [refusedBundles addObject:app];
+            installReasons[reasonKind] = @([installReasons[reasonKind] unsignedIntegerValue] + 1);
+            // Every offloaded app (there are few, and they're the claim to check),
+            // and a few of the unknown ones.
+            if (app.installState == WQInstallOffloaded || (app.installState == WQInstallUnknown && installNotes < 6)) {
+                if (app.installState == WQInstallUnknown) installNotes++;
+                wq_log(@"install state: %@: %@", bid ?: c.lastPathComponent, why ?: @"no identifier");
+            }
             [apps addObject:app];
         }
         WQAppScanStep(nil);
         if (cancellation.isCancelled) return;
+        // Offloaded apps' placeholder bundles can be read while installed
+        // apps' bundles refuse: once a placeholder was read on this device, a
+        // refused bundle is an installed app.
+        if (installCounts[WQInstallOffloaded] && refusedBundles.count) {
+            for (WQAppItem *app in refusedBundles) app.installState = WQInstallInstalled;
+            installCounts[WQInstallInstalled] += refusedBundles.count;
+            installCounts[WQInstallUnknown] -= refusedBundles.count;
+            wq_log(@"install state: %lu refused bundles counted as installed (offloaded placeholders are readable here)",
+                   (unsigned long)refusedBundles.count);
+        }
         wq_log(@"app scan: %lu apps measured in %.1f s", (unsigned long)apps.count, CFAbsoluteTimeGetCurrent() - scanStarted);
+        wq_log(@"app scan: %lu installed, %lu offloaded, %lu unknown", (unsigned long)installCounts[WQInstallInstalled],
+               (unsigned long)installCounts[WQInstallOffloaded], (unsigned long)installCounts[WQInstallUnknown]);
+        NSMutableArray *reasonParts = [NSMutableArray new];
+        for (NSString *kind in [installReasons keysSortedByValueUsingSelector:@selector(compare:)].reverseObjectEnumerator)
+            [reasonParts addObject:[NSString stringWithFormat:@"%@ %@", installReasons[kind], kind]];
+        if (reasonParts.count) wq_log(@"install state by reason: %@", [reasonParts componentsJoinedByString:@", "]);
         if (refused.count) wq_log(@"app scan: %lu containers refused access: %@", (unsigned long)refused.count,
                                   [refused componentsJoinedByString:@", "]);
         [apps sortUsingComparator:^NSComparisonResult(WQAppItem *a, WQAppItem *b) {
@@ -627,6 +779,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != self->_scanGeneration || cancellation.isCancelled) return;
             self->_scanning = NO;
+            self->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
             self->_apps = apps;
             [self rebuildVisibleApps];
             [self.refreshControl endRefreshing];
@@ -649,6 +802,8 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         shown = [shown filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQAppItem *a, NSDictionary *__unused b) {
             if (filter == 1) return wq_app_is_apple(a);
             if (filter == 2) return !wq_app_is_apple(a);
+            if (filter == 4) return a.installState == WQInstallInstalled;
+            if (filter == 5) return a.installState == WQInstallOffloaded;
             return a.backups.count > 0;
         }]];
     }
@@ -710,9 +865,19 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         name.subtitle = WQLocalized(@"A–Z");
         UIMenu *sort = [UIMenu menuWithTitle:WQLocalizedNullable(@"Sort By") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[size, name]];
         NSInteger current = [NSUserDefaults.standardUserDefaults integerForKey:kWQAppsFilterPref];
-        NSArray *titles = @[WQLocalized(@"All Apps"), WQLocalized(@"Apple Apps"), WQLocalized(@"Other Apps"), WQLocalized(@"Backed Up")];
+        NSArray *titles = @[WQLocalized(@"All Apps"), WQLocalized(@"Apple Apps"), WQLocalized(@"Other Apps"), WQLocalized(@"Backed Up"),
+                            WQLocalized(@"Installed"), WQLocalized(@"Offloaded")];
+        // Installed/Offloaded only where bundles could be checked (not on iOS 26).
+        WQAppsViewController *strongSelf = weakSelf;
+        // Only offer Installed/Offloaded when nearly every app's state is
+        // known; otherwise those filters would quietly hide the unknown ones.
+        NSArray<WQAppItem *> *all = strongSelf ? strongSelf->_apps : @[];
+        NSUInteger unknown = 0;
+        for (WQAppItem *app in all) if (app.installState == WQInstallUnknown) unknown++;
+        BOOL installKnown = all.count > 0 && unknown * 10 <= all.count;
         NSMutableArray *filters = [NSMutableArray new];
         for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
+            if (i >= 4 && !installKnown && i != current) continue;
             UIAction *f = [UIAction actionWithTitle:WQLocalizedNullable(titles[(NSUInteger)i]) image:nil identifier:nil handler:^(UIAction *__unused a) {
                 [NSUserDefaults.standardUserDefaults setInteger:i forKey:kWQAppsFilterPref];
                 [weakSelf resortApps];
@@ -754,6 +919,16 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
             [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Open Data Folder") image:[UIImage systemImageNamed:@"folder"] identifier:nil
                                                   handler:^(UIAction *__unused a) {
                 [weakSelf.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:app.container title:app.name]
+                                                         animated:YES];
+            }]];
+        }
+        // Only where bundle containers open (see the startup check).
+        NSString *bundlePath = app.bundleID.length && wq_app_bundles_reachable() && wq_display_names_loaded()
+            ? wq_bundle_path_for_id(app.bundleID) : nil;
+        if (bundlePath.length) {
+            [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Open App Bundle") image:[UIImage systemImageNamed:@"app.badge"] identifier:nil
+                                                  handler:^(UIAction *__unused a) {
+                [weakSelf.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:bundlePath title:app.name]
                                                          animated:YES];
             }]];
         }
@@ -836,6 +1011,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     } else {
         c.secondaryText = WQLocalizedFormat(@"%@ · %@%@", wq_size_text(app.bytes), app.bundleID, hasBackup ? WQLocalized(@" · backed up") : @"");
     }
+    if (app.installState == WQInstallOffloaded) c.secondaryText = [c.secondaryText stringByAppendingString:WQLocalized(@" · offloaded")];
     c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
     c.image = wq_app_icon(app.bundleID) ?: [UIImage systemImageNamed:@"app.dashed"];
     c.imageProperties.maximumSize = CGSizeMake(36, 36);
@@ -876,6 +1052,9 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     [sheet addAction:wq_alert_action(WQLocalized(@"Back Up Data"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         [self backUp:app then:nil];
     })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Import as Backup…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self pickImportFor:app];
+    })];
     NSArray *backups = app.backups;
     NSString *latest = backups.firstObject[@"path"];
     if (latest) {
@@ -912,6 +1091,111 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     [self setBusy:NO status:nil];
     wq_alert(self, title, message);
     [self scan];
+}
+
+// Import as Backup: a folder or ZIP with Documents and/or Library (from the
+// Files app, another device's shared backup or another tool) becomes a
+// normal, verified backup of this app, ready to restore.
+- (void)pickImportFor:(WQAppItem *)app
+{
+    _importApp = app;
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initForOpeningContentTypes:@[UTTypeFolder, UTTypeZIP] asCopy:NO];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
+{
+    WQAppItem *app = _importApp;
+    _importApp = nil;
+    if (app && urls.firstObject) [self importBackupFrom:urls.firstObject for:app confirmedOwner:NO];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller
+{
+    _importApp = nil;
+}
+
+- (void)importBackupFrom:(NSURL *)url for:(WQAppItem *)app confirmedOwner:(BOOL)confirmed
+{
+    [self setBusy:YES status:WQLocalizedFormat(@"Importing a backup of %@…", app.name)];
+    NSString *bundleID = app.bundleID;
+    dispatch_async(wq_io(), ^{
+        BOOL scoped = [url startAccessingSecurityScopedResource];
+        __block NSString *error = nil, *dest = nil, *declared = nil;
+        __block NSArray *ignored = @[];
+        NSString *work = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                          [@"wq-import-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSError *coordinationError = nil;
+        // Coordinated, so a folder in iCloud Drive is downloaded first.
+        [[NSFileCoordinator new] coordinateReadingItemAtURL:url options:NSFileCoordinatorReadingWithoutChanges
+                                                      error:&coordinationError byAccessor:^(NSURL *readURL) {
+            NSString *source = readURL.path;
+            BOOL isDir = NO;
+            [fm fileExistsAtPath:source isDirectory:&isDir];
+            if (!isDir) {
+                // A ZIP: unpack it locally first, with the usual safety checks.
+                struct statfs fs;
+                unsigned long long available = statfs(NSTemporaryDirectory().fileSystemRepresentation, &fs) == 0
+                    ? (unsigned long long)fs.f_bavail * fs.f_bsize : 0;
+                unsigned long long reserve = 256ull * 1024 * 1024;
+                unsigned long long limit = available > reserve ? (available - reserve) / 2 : 0;
+                [fm createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
+                NSUInteger files = 0, skipped = 0;
+                if (!wq_zip_extract(source, work, wq_archive_posix_io(), limit, nil, nil, &files, &skipped, &error)) {
+                    error = WQLocalizedFormat(@"The ZIP couldn't be unpacked: %@", error ?: WQLocalized(@"unknown error"));
+                    return;
+                }
+                source = work;
+            }
+            NSString *root = WQAppsSupportImportRoot(source, &error);
+            if (!root) return;
+            declared = WQAppsSupportImportDeclaredBundle(root);
+            if (declared.length && ![declared isEqualToString:bundleID] && !confirmed) return;   // ask first
+            ignored = WQAppsSupportImportIgnored(root);
+            dest = wq_make_backup_from(bundleID, root, kBackupReasonImported, nil, &error);
+        }];
+        if (coordinationError && !error && !dest) error = coordinationError.localizedDescription;
+        if (scoped) [url stopAccessingSecurityScopedResource];
+        [fm removeItemAtPath:work error:nil];
+        wq_log(@"import backup %@ from %@: %@%@", bundleID, url.lastPathComponent,
+               dest ? dest.lastPathComponent : (error ?: @"needs confirmation"),
+               ignored.count ? [NSString stringWithFormat:@" (left out: %@)", [ignored componentsJoinedByString:@", "]] : @"");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self setBusy:NO status:nil];
+            if (!dest && !error && declared.length) {
+                UIAlertController *ask = wq_alert_controller(@"Different app?",
+                    WQLocalizedFormat(@"This data says it belongs to %@, not %@ (%@). Importing it as a backup of %@ and restoring it can break the app.",
+                                      declared, app.name, bundleID, app.name), UIAlertControllerStyleAlert);
+                [ask addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+                [ask addAction:wq_alert_action(@"Import Anyway", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+                    [self importBackupFrom:url for:app confirmedOwner:YES];
+                })];
+                [self presentViewController:ask animated:YES completion:nil];
+                return;
+            }
+            if (!dest) {
+                wq_alert(self, @"Not imported", WQLocalizedFormat(@"%@ Nothing was changed.", error ?: WQLocalized(@"The import failed.")));
+                return;
+            }
+            NSString *message = WQLocalizedFormat(@"Saved as backup %@ of %@. It's verified like any other backup and can be restored from Apps.%@",
+                dest.lastPathComponent, app.name,
+                ignored.count ? WQLocalizedFormat(@"\n\nLeft out (only Documents and Library are backed up): %@.",
+                                                  [ignored componentsJoinedByString:@", "]) : @"");
+            UIAlertController *done = wq_alert_controller(@"Imported", message, UIAlertControllerStyleAlert);
+            [done addAction:wq_alert_action(@"Done", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) {
+                [self scan];
+            })];
+            [done addAction:wq_alert_action(@"Restore Now…", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+                self->_restoreBundleID = bundleID;   // offered once the list is read again
+                [self scan];
+            })];
+            [self presentViewController:done animated:YES completion:nil];
+        });
+    });
 }
 
 - (void)backUp:(WQAppItem *)app then:(void (^)(BOOL ok))next
@@ -1014,7 +1298,10 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     NSString *path = backup[@"path"];
     NSString *warning = [backup[@"verified"] boolValue] ? @""
         : WQLocalizedFormat(@"\n\nThis backup is unverified (%@). WQ Files will re-check its parts before changing anything.", backup[@"reason"] ?: WQLocalized(@"no typed manifest"));
-    UIAlertController *alert = wq_alert_controller(WQLocalizedFormat(@"Restore %@?", app.name), WQLocalizedFormat(@"Replaces the app's current Documents and Library with the backup from %@; tmp is left untouched. The current data is backed up first, and put back if anything fails. Close the app first: a running app can make the operation non-snapshot-consistent.%@", wq_backup_label(backup), warning), UIAlertControllerStyleAlert);
+    NSString *body = wq_keep_before_restore()
+        ? WQLocalizedFormat(@"Replaces the app's current Documents and Library with the backup from %@; tmp is left untouched. The current data is backed up first, and put back if anything fails. Close the app first: a running app can make the operation non-snapshot-consistent.%@", wq_backup_label(backup), warning)
+        : WQLocalizedFormat(@"Replaces the app's current Documents and Library with the backup from %@; tmp is left untouched. The current data is backed up first, and put back if anything fails; after a successful restore that backup is deleted (Keep Data Before Restore is off). Close the app first: a running app can make the operation non-snapshot-consistent.%@", wq_backup_label(backup), warning);
+    UIAlertController *alert = wq_alert_controller(WQLocalizedFormat(@"Restore %@?", app.name), body, UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
     [alert addAction:wq_alert_action(WQLocalized(@"Restore"), UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         [self setBusy:YES status:WQLocalizedFormat(@"Restoring %@…", app.name)];
@@ -1363,6 +1650,20 @@ NSString *wq_recover_interrupted_restore(void)
             wq_log(@"restore %@ from %@: OK", app.bundleID, backup.lastPathComponent);
             *title = WQLocalized(@"Restored");
             NSString *cleanup = removed ? @"" : WQLocalized(@" The recovery journal is committed and will be cleaned up at the next launch.");
+            // Keep Data Before Restore off: the safety backup was only needed
+            // while the restore could still fail. Kept while the journal still
+            // points at it.
+            NSString *discardError = nil;
+            if (!wq_keep_before_restore() && removed) {
+                if (wq_delete_backup(safety, &discardError)) {
+                    wq_log(@"restore %@: removed the before-restore backup %@ (Keep Data Before Restore is off)",
+                           app.bundleID, safety.lastPathComponent);
+                    *message = WQLocalizedFormat(@"Open %@ to use the restored Documents and Library; tmp was not changed. The data from before was not kept (Keep Data Before Restore is off).", app.name);
+                    return;
+                }
+                wq_log(@"restore %@: couldn't remove the before-restore backup %@ (%@)", app.bundleID,
+                       safety.lastPathComponent, discardError);
+            }
             *message = WQLocalizedFormat(@"Open %@ to use the restored Documents and Library. The data from before is kept as backup %@; tmp was not changed. Keep the app closed during this operation.%@", app.name, safety.lastPathComponent, cleanup);
             return;
         }

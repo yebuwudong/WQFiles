@@ -365,3 +365,67 @@ static inline BOOL WQAppsSupportJournalAllowsNewRestore(WQAppsSupportJournalStat
     }
     return YES;
 }
+
+#pragma mark - Import as Backup
+
+// The folder inside an import that holds Documents and/or Library: the
+// picked folder itself, or the shallowest one below it (a shared backup ZIP
+// or another tool's export usually wraps them in a folder). Several at the
+// same depth are ambiguous.
+static inline NSString *WQAppsSupportImportRoot(NSString *dir, NSString **error)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *level = @[dir];
+    for (int depth = 0; depth <= 3 && level.count; depth++) {
+        NSMutableArray<NSString *> *found = [NSMutableArray new], *next = [NSMutableArray new];
+        for (NSString *candidate in level) {
+            BOOL has = NO;
+            for (NSString *part in @[@"Documents", @"Library"]) {
+                struct stat st;
+                if (lstat([candidate stringByAppendingPathComponent:part].fileSystemRepresentation, &st) == 0 && S_ISDIR(st.st_mode))
+                    has = YES;
+            }
+            if (has) { [found addObject:candidate]; continue; }
+            for (NSString *name in [[fm contentsOfDirectoryAtPath:candidate error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+                if ([name hasPrefix:@"."] || [name isEqualToString:@"__MACOSX"]) continue;
+                NSString *child = [candidate stringByAppendingPathComponent:name];
+                struct stat st;
+                if (lstat(child.fileSystemRepresentation, &st) == 0 && S_ISDIR(st.st_mode)) [next addObject:child];
+            }
+        }
+        if (found.count == 1) return found.firstObject;
+        if (found.count > 1) {
+            NSMutableArray *names = [NSMutableArray new];
+            for (NSString *f in found) [names addObject:[f substringFromIndex:MIN(dir.length + 1, f.length)]];
+            if (error) *error = [NSString stringWithFormat:NSLocalizedString(@"It holds data of several apps (%@). Pick one of these folders instead.", nil),
+                                 [names componentsJoinedByString:@", "]];
+            return nil;
+        }
+        level = next;
+    }
+    if (error) *error = NSLocalizedString(@"No Documents or Library folder was found in it.", nil);
+    return nil;
+}
+
+// The bundle ID the imported data says it belongs to, if it says: a WQ Files
+// backup's checklist or a container's metadata file.
+static inline NSString *WQAppsSupportImportDeclaredBundle(NSString *root)
+{
+    NSDictionary *manifest = [NSDictionary dictionaryWithContentsOfFile:[root stringByAppendingPathComponent:@".wqbackup.plist"]];
+    if ([manifest[@"BundleID"] isKindOfClass:NSString.class]) return manifest[@"BundleID"];
+    NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:
+                              [root stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"]];
+    if ([metadata[@"MCMMetadataIdentifier"] isKindOfClass:NSString.class]) return metadata[@"MCMMetadataIdentifier"];
+    return nil;
+}
+
+// Items next to Documents/Library that an import leaves out.
+static inline NSArray<NSString *> *WQAppsSupportImportIgnored(NSString *root)
+{
+    NSMutableArray *ignored = [NSMutableArray new];
+    for (NSString *name in [[NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+        if ([@[@"Documents", @"Library", @".wqbackup.plist", @".com.apple.mobile_container_manager.metadata.plist", @".DS_Store"] containsObject:name]) continue;
+        [ignored addObject:name];
+    }
+    return ignored;
+}

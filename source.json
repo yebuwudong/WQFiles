@@ -23,11 +23,10 @@
         {
           "version": "0.9.3",
           "buildVersion": "59",
-          "date": "2026-11-11",
-          "size": 559984,
-          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.3/WQFiles.ipa",
-          "localizedDescription": "New: startup check (stops with what failed instead of empty lists when access breaks), Recently Deleted under Backups. Cache Cleaner progress bar.",
-          "minOSVersion": "26.0"
+          "date": "2026-11-12",
+          "size": 565099,
+          "downloadURL": "https://github.com/yebuwudong/WQFiles/releases/download/zh-latest/WQFiles-zh.ipa",
+          "localizedDescription": "汉化版 0.9.3（build 59）。"
         },
         {
           "version": "0.9.2",

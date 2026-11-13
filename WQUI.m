@@ -32,18 +32,30 @@ NSString *wq_device_line(void)
                     : [NSString stringWithFormat:@"%@ · iOS %@", model, ver];
 }
 
-// A small centered label with the device/iOS line, for a table header.
+// "WQ Files 0.9.4 (66)": in the strip, so screenshots show the version.
+NSString *wq_app_version_line(void)
+{
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    return [NSString stringWithFormat:@"WQ Files %@ (%@)", info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?"];
+}
+
+const CGFloat kWQDeviceStripHeight = 46;
+
+// A small centered strip with the WQ Files version and the device/iOS line,
+// for a table header.
 UIView *wq_device_header(CGFloat width)
 {
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 50)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, kWQDeviceStripHeight + 16)];
     UILabel *header = [UILabel new];
-    header.numberOfLines = 0;
+    header.numberOfLines = 2;
     header.textAlignment = NSTextAlignmentCenter;
     header.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     header.textColor = UIColor.secondaryLabelColor;
     header.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    header.text = wq_device_line();
-    header.frame = CGRectMake(0, 0, width, 34);
+    header.adjustsFontSizeToFitWidth = YES;   // keeps both lines on narrow screens
+    header.minimumScaleFactor = 0.8;
+    header.text = [NSString stringWithFormat:@"%@\n%@", wq_app_version_line(), wq_device_line()];
+    header.frame = CGRectMake(0, 0, width, kWQDeviceStripHeight);
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [box addSubview:header];  // 16 pt of clear space below the strip
     return box;

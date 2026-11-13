@@ -125,13 +125,23 @@ static inline void WQAppsSupportHashBlob(CC_SHA256_CTX *ctx, const void *bytes, 
     if (length) CC_SHA256_Update(ctx, bytes, (CC_LONG)length);
 }
 
+// Sockets, FIFOs and device files: wq_copy_contents leaves them out (they
+// hold no data), so they are not part of the supported tree either.
+static inline BOOL WQAppsSupportIsUnsupportedSpecial(mode_t mode)
+{
+    return S_ISSOCK(mode) || S_ISFIFO(mode) || S_ISCHR(mode) || S_ISBLK(mode);
+}
+
 // Deterministic SHA-256 over length-prefixed tree metadata. `includeIdentity`
 // adds inode/mtime/ctime for source-stability checks; the shape variant omits
 // them and is suitable for comparing a source with its copy. A digest keeps
 // memory bounded and makes filenames containing delimiters unambiguous.
-static inline NSString *WQAppsSupportTreeSignature(NSString *path, BOOL includeIdentity,
-                                                   BOOL *exists, NSString **errorOut)
+// Unsupported special entries (see above) are left out of both variants and
+// counted in *omitted, so a source and its copy describe the same tree.
+static inline NSString *WQAppsSupportTreeSignatureOmitting(NSString *path, BOOL includeIdentity,
+                                                           BOOL *exists, NSUInteger *omitted, NSString **errorOut)
 {
+    if (omitted) *omitted = 0;
     struct stat rootStat;
     if (lstat(path.fileSystemRepresentation, &rootStat) != 0) {
         if (errno == ENOENT) {
@@ -165,6 +175,10 @@ static inline NSString *WQAppsSupportTreeSignature(NSString *path, BOOL includeI
         if (lstat(item.fileSystemRepresentation, &itemStat) != 0) {
             if (errorOut) *errorOut = [NSString stringWithFormat:@"Cannot inspect %@", relative];
             return nil;
+        }
+        if (WQAppsSupportIsUnsupportedSpecial(itemStat.st_mode)) {
+            if (omitted) (*omitted)++;
+            continue;
         }
         unsigned type = (unsigned)(itemStat.st_mode & S_IFMT);
         const char *name = relative.UTF8String;
@@ -202,6 +216,12 @@ static inline NSString *WQAppsSupportTreeSignature(NSString *path, BOOL includeI
     NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
     for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
     return hex;
+}
+
+static inline NSString *WQAppsSupportTreeSignature(NSString *path, BOOL includeIdentity,
+                                                   BOOL *exists, NSString **errorOut)
+{
+    return WQAppsSupportTreeSignatureOmitting(path, includeIdentity, exists, NULL, errorOut);
 }
 
 // Content-level digest for backup verification: metadata plus every regular
@@ -407,16 +427,36 @@ static inline NSString *WQAppsSupportImportRoot(NSString *dir, NSString **error)
     return nil;
 }
 
-// The bundle ID the imported data says it belongs to, if it says: a WQ Files
-// backup's checklist or a container's metadata file.
+// Every bundle ID the imported data says it belongs to: a WQ Files backup's
+// checklist and a container's metadata file, in that order, without
+// duplicates. A declaration that is present but not a valid bundle ID is
+// returned in *invalid (as text) instead; callers refuse such data.
+static inline NSArray<NSString *> *WQAppsSupportImportDeclaredBundles(NSString *root, NSString **invalid)
+{
+    if (invalid) *invalid = nil;
+    NSMutableArray<NSString *> *ids = [NSMutableArray new];
+    NSArray *sources = @[@[@".wqbackup.plist", @"BundleID"],
+                         @[@".com.apple.mobile_container_manager.metadata.plist", @"MCMMetadataIdentifier"]];
+    for (NSArray *source in sources) {
+        NSString *file = [root stringByAppendingPathComponent:source[0]];
+        struct stat st;
+        if (lstat(file.fileSystemRepresentation, &st) != 0) continue;   // not declared
+        NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:file];
+        id value = [plist isKindOfClass:NSDictionary.class] ? plist[source[1]] : nil;
+        if (!value) continue;   // a file without this key declares nothing
+        if (!WQAppsSupportBundleIDValid(value)) {
+            if (invalid && !*invalid) *invalid = [value isKindOfClass:NSString.class] ? value : [value description];
+            continue;
+        }
+        if (![ids containsObject:value]) [ids addObject:value];
+    }
+    return ids;
+}
+
+// The first declared bundle ID, if any (see WQAppsSupportImportDeclaredBundles).
 static inline NSString *WQAppsSupportImportDeclaredBundle(NSString *root)
 {
-    NSDictionary *manifest = [NSDictionary dictionaryWithContentsOfFile:[root stringByAppendingPathComponent:@".wqbackup.plist"]];
-    if ([manifest[@"BundleID"] isKindOfClass:NSString.class]) return manifest[@"BundleID"];
-    NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:
-                              [root stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"]];
-    if ([metadata[@"MCMMetadataIdentifier"] isKindOfClass:NSString.class]) return metadata[@"MCMMetadataIdentifier"];
-    return nil;
+    return WQAppsSupportImportDeclaredBundles(root, NULL).firstObject;
 }
 
 // Items next to Documents/Library that an import leaves out.

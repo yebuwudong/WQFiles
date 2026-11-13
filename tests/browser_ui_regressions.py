@@ -30,6 +30,9 @@ require(main, "wq_backup_original_path(item.path)", "typed backup path derivatio
 require(main, "initWithPath:wq_backup_root() title:WQLocalizedNullable(@\"Backups\")", "Backups root navigation")
 require(main, "if (!_version)", "nil editor version refusal")
 forbid(main, "childPaths.count) ? nil : error", "count-based enumeration success check")
+health_present = main.split("- (void)presentPendingHealthFailure", 1)[1].split("// Each set of warnings", 1)[0]
+require(health_present, "if (![self healthFailureCanPresent])", "startup failure waits for an idle start screen")
+forbid(health_present, "while (host.presentedViewController)", "startup failure presented over open actions")
 forbid(main, "wq_backup_root().stringByDeletingLastPathComponent title:@\"Backups\"", "parent-path Backups navigation")
 forbid(main, "item.isDir = S_ISDIR(target.st_mode);", "symlink target directory override")
 require(main, "WQ Files does not follow symbolic links", "symlink UI contract")
@@ -40,6 +43,11 @@ require(main, "wq_backup_unit_deletable", "backup units are selectable")
 require(main, "@\"Select Backups\"", "backup multi-selection mode")
 require(main, "deleteSelectedBackups", "multi-backup deletion action")
 require(main, "@\"Delete Backup…\"", "single backup deletion action")
+require(main, "wq_move_expecting(path, dest, wq_identity_at(identities, i)", "Move Here revalidates the picked identity")
+require(main, "wq_delete_tree_expecting(path, wq_identity_at(identities, i)", "folder delete revalidates the selected identity")
+require(main, "wq_rename_expecting(item.path, name, item.identity", "rename revalidates the listed identity")
+require(main, "links or special files (pipes, sockets) are removed without a backup", "delete confirmation discloses unbacked entries")
+forbid(main, "wq_tree_count(path, 1000000, &files, &bytes)", "delete count that lumps links with backed-up files")
 text_save = main.split("- (void)toggleEdit:", 1)[1].split("- (void)share:", 1)[0]
 require(text_save, "wq_write_if_unchanged_get_version", "descriptor-verified text save result")
 forbid(text_save, "wq_file_version(", "post-write pathname version adoption")
@@ -54,6 +62,13 @@ require(cache, "self.refreshControl = [UIRefreshControl new];", "cache refresh c
 require(cache, "_lastScanFinished > 0", "cache rescans stale data on appearance")
 require(cache, "_cleanCancellation", "cache clean cancellation")
 require(cache, "action:@selector(stopClean)", "cache clean stop button")
+cache_buttons = cache.split("- (void)updateButtons", 1)[1].split("    if (_scanning) {", 1)[0]
+require(cache_buttons, "if (_cleaning)", "cache Stop button checked before the scanning state")
+cache_refresh = cache.split("- (void)userRefresh", 1)[1].split("- (void)scan\n", 1)[0]
+require(cache_refresh, "_refreshAfterClean = YES;", "pull to refresh is queued while cleaning")
+cache_scan = cache.split("- (void)scan\n", 1)[1].split("[_scanCancellation cancel];", 1)[0]
+require(cache_scan, "if (_cleaning)", "no cache scan starts while cleaning")
+require(cache, "[self rescanAfterClean:YES];", "one serialized refresh after cleaning")
 require(cache, "Close running apps first.", "cache clean warning")
 require(sharing, "__weak UIViewController *weakHost", "weak sharing host")
 require(sharing, "preparation.cancelled", "abandoned folder preparation")

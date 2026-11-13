@@ -11,6 +11,9 @@
 #import "WQCore.h"
 #import "WQUI.h"
 #import <sys/stat.h>
+#import <errno.h>
+#import <string.h>
+#import <unistd.h>
 
 static const NSUInteger kPageSize = 64 * 1024;
 static const NSUInteger kSearchChunk = 1024 * 1024;
@@ -20,6 +23,59 @@ static BOOL wqh_is_visible(UIViewController *host)
     if (!host.isViewLoaded || !host.view.window) return NO;
     UINavigationController *navigation = host.navigationController;
     return !navigation || navigation.visibleViewController == host;
+}
+
+// The editor's snapshot is the version dictionary sampled when it was opened
+// (or returned by its last verified save). Every read opens one descriptor and
+// checks it still is that file instance with that content stamp, so pages and
+// search results can never come from a replacement file.
+static BOOL wqh_stat_matches(const struct stat *st, NSDictionary<NSString *, NSNumber *> *version)
+{
+    return version && S_ISREG(st->st_mode)
+        && [version[@"device"] isEqualToNumber:@(st->st_dev)]
+        && [version[@"inode"] isEqualToNumber:@(st->st_ino)]
+        && [version[@"size"] isEqualToNumber:@(st->st_size)]
+        && [version[@"modifiedSeconds"] isEqualToNumber:@(st->st_mtimespec.tv_sec)]
+        && [version[@"modifiedNanoseconds"] isEqualToNumber:@(st->st_mtimespec.tv_nsec)];
+}
+
+static NSString *wqh_errno_text(int err)
+{
+    return [NSString stringWithUTF8String:strerror(err)] ?: [NSString stringWithFormat:@"errno %d", err];
+}
+
+// A read-only descriptor for the snapshot's file instance, or -1. *changed is
+// YES when the path now names a different instance or different content.
+static int wqh_open_snapshot(NSString *path, NSDictionary<NSString *, NSNumber *> *version, BOOL *changed, NSString **error)
+{
+    if (changed) *changed = NO;
+    int fd = wq_open_for_reading(path);
+    if (fd < 0) { if (error) *error = wqh_errno_text(errno); return -1; }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !wqh_stat_matches(&st, version)) {
+        close(fd);
+        if (changed) *changed = YES;
+        if (error) *error = WQLocalized(@"The file changed while it was being read. Open it again.");
+        return -1;
+    }
+    return fd;
+}
+
+// The one range-read helper for pages and search: up to `length` bytes at
+// `offset` from an already verified descriptor (fewer at the end of the file).
+static NSData *wqh_pread(int fd, unsigned long long offset, NSUInteger length, NSString **error)
+{
+    NSMutableData *data = [NSMutableData dataWithLength:length];
+    NSUInteger got = 0;
+    while (got < length) {
+        ssize_t n = pread(fd, (uint8_t *)data.mutableBytes + got, length - got, (off_t)(offset + got));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) { if (error) *error = wqh_errno_text(errno); return nil; }
+        if (n == 0) break;
+        got += (NSUInteger)n;
+    }
+    data.length = got;
+    return data;
 }
 
 static void wqh_alert(UIViewController *host, NSString *title, NSString *message)
@@ -54,8 +110,10 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     NSUInteger _matchLength;
     NSData *_lastSearchNeedle;
     NSUInteger _searchGeneration;
+    WQScanCancellation *_searchCancel;
     NSString *_status;
-    dispatch_queue_t _queue;
+    dispatch_queue_t _queue;         // initial snapshot, page reads, saves
+    dispatch_queue_t _searchQueue;   // searches, so a long scan never blocks pages or saves
 }
 
 - (instancetype)initWithPath:(NSString *)path readOnly:(BOOL)readOnly
@@ -71,9 +129,16 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         _edits = [NSMutableDictionary new];
         _editState = [WQEditState new];
         _queue = dispatch_queue_create("wqfiles.hex", DISPATCH_QUEUE_SERIAL);
+        _searchQueue = dispatch_queue_create("wqfiles.hex.search",
+            dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
         self.title = path.lastPathComponent;
     }
     return self;
+}
+
+- (void)dealloc
+{
+    [_searchCancel cancel];
 }
 
 - (void)viewDidLoad
@@ -89,15 +154,28 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) { [weakSelf leave]; }];
     NSString *path = _path;
     dispatch_async(_queue, ^{
-        struct stat st;
-        BOOL ok = wq_stat(path, &st) && S_ISREG(st.st_mode);
-        NSDictionary *version = ok ? wq_file_version(path) : nil;
+        // Size, identity and save version all come from one stat snapshot,
+        // confirmed against an open descriptor. A replacement between the
+        // stat and the open is retried, then refused, never mixed.
+        NSDictionary<NSString *, NSNumber *> *version = nil;
+        BOOL changed = NO;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            version = wq_file_version(path);
+            if (!version) break;
+            int fd = wqh_open_snapshot(path, version, &changed, NULL);
+            if (fd >= 0) close(fd);
+            if (!changed) break;   // verified, or unreadable (page reads report that)
+            version = nil;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_version = version;
-            self->_size = ok ? (unsigned long long)st.st_size : 0;
+            self->_size = version ? version[@"size"].unsignedLongLongValue : 0;
+            [self->_pages removeAllObjects];
             [self layoutColumns];
-            if (wq_permission_hint(path, YES)) self->_readOnly = YES;
-            self->_status = ok ? nil : WQLocalized(@"Cannot open this file.");
+            if (!version || wq_permission_hint(path, YES)) self->_readOnly = YES;
+            self->_status = version ? nil
+                : changed ? WQLocalized(@"The file changed while it was being read. Open it again.")
+                          : WQLocalized(@"Cannot open this file.");
             [self updateBar];
             [self.tableView reloadData];
         });
@@ -108,6 +186,8 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 - (void)viewDidDisappear:(BOOL)animated
 {
     [super viewDidDisappear:animated];
+    [_searchCancel cancel];
+    _searchCancel = nil;
     _searchGeneration++;
     _lastSearchNeedle = nil;
     _matchLength = 0;
@@ -201,13 +281,24 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     if ([_loading containsObject:page]) return;
     [_loading addObject:page];
     NSString *path = _path;
+    NSDictionary *version = _version;
     dispatch_async(_queue, ^{
         NSString *error = nil;
-        NSData *data = wq_read_range(path, page.unsignedLongLongValue * kPageSize, kPageSize, &error);
+        BOOL changed = NO;
+        NSData *data = nil;
+        int fd = wqh_open_snapshot(path, version, &changed, &error);
+        if (fd >= 0) {
+            data = wqh_pread(fd, page.unsignedLongLongValue * kPageSize, kPageSize, &error);
+            close(fd);
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self->_loading removeObject:page];
+            // A page read for an older snapshot (before a save) is dropped;
+            // the reload after the save requests it again.
+            if (version != self->_version && ![version isEqual:self->_version]) return;
             if (!data) {
-                self->_status = wq_permission_hint(path, NO) ? WQLocalized(@"Only the owner may read this file.") : WQLocalizedFormat(@"Read failed: %@", error);
+                self->_status = changed ? error
+                    : wq_permission_hint(path, NO) ? WQLocalized(@"Only the owner may read this file.") : WQLocalizedFormat(@"Read failed: %@", error);
                 [self updateBar];
                 return;
             }
@@ -281,7 +372,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         if (b < 0) return;   // page not loaded yet
         [current appendFormat:i ? @" %02x" : @"%02x", b];
     }
-    UIAlertController *a = wq_alert_controller(WQLocalizedFormat(@"Bytes at 0x%llx", start), WQLocalizedFormat(@"Overwrite these %lu bytes (hex). The file size stays the same.", (unsigned long)count), UIAlertControllerStyleAlert);
+    UIAlertController *a = wq_alert_controller(WQVerbatim(WQLocalizedFormat(@"Bytes at 0x%llx", start)), WQVerbatim(WQLocalizedFormat(@"Overwrite these %lu bytes (hex). The file size stays the same.", (unsigned long)count)), UIAlertControllerStyleAlert);
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
         f.text = current;
         f.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
@@ -290,9 +381,11 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     }];
     [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [a addAction:wq_alert_action(@"Set", UIAlertActionStyleDefault, ^(UIAlertAction *__unused x) {
-        NSData *bytes = WQParseHex(a.textFields.firstObject.text ?: @"", NO);
+        // Bounded: oversized text is refused before it is scanned, and the
+        // parse stops at the first byte past `count`.
+        NSData *bytes = WQParseHexExactly(a.textFields.firstObject.text ?: @"", count);
         if (bytes.length != count) {
-            wqh_alert(self, @"Not changed", WQLocalizedFormat(@"Enter exactly %lu bytes in hex.", (unsigned long)count));
+            wqh_alert(self, @"Not changed", WQVerbatim(WQLocalizedFormat(@"Enter exactly %lu bytes in hex.", (unsigned long)count)));
             return;
         }
         const uint8_t *nb = bytes.bytes;
@@ -348,7 +441,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         return;
     }
     NSDictionary *runs = [self runs];
-    UIAlertController *a = wq_alert_controller(@"Save changes?", WQLocalizedFormat(@"%lu bytes in %@ are overwritten in place. The current file is backed up first.", (unsigned long)_edits.count, _path), UIAlertControllerStyleAlert);
+    UIAlertController *a = wq_alert_controller(@"Save changes?", WQVerbatim(WQLocalizedFormat(@"%lu bytes in %@ are overwritten in place. The current file is backed up first.", (unsigned long)_edits.count, _path)), UIAlertControllerStyleAlert);
     [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [a addAction:wq_alert_action(@"Save", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused x) {
         NSDictionary *expectedVersion = [self->_version copy];
@@ -367,7 +460,8 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
                 [self->_editState finishSave:ok revision:savedRevision];
                 if (!ok) {
                     [self updateBar];
-                    wqh_alert(self, @"Save failed", error ?: wq_permission_hint(path, YES) ?: @"Unknown error");
+                    NSString *reason = error ?: wq_permission_hint(path, YES);
+                    wqh_alert(self, @"Save failed", reason ? WQVerbatim(reason) : @"Unknown error");
                     return;
                 }
                 self->_version = savedVersion;
@@ -445,7 +539,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
             return;
         }
         if (off >= _size) {
-            wqh_alert(self, @"Offset out of range", WQLocalizedFormat(@"Enter an offset from 0x0 through 0x%llx.", _size - 1));
+            wqh_alert(self, @"Offset out of range", WQVerbatim(WQLocalizedFormat(@"Enter an offset from 0x0 through 0x%llx.", self->_size - 1)));
             return;
         }
         [self scrollToOffset:off];
@@ -488,31 +582,43 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
 - (void)search:(NSData *)needle from:(unsigned long long)from
 {
     NSUInteger generation = ++_searchGeneration;
+    [_searchCancel cancel];   // a newer query stops the older scan after its current chunk
+    WQScanCancellation *cancel = [WQScanCancellation new];
+    _searchCancel = cancel;
     _status = WQLocalized(@"Searching…");
     [self updateBar];
     NSString *path = _path;
+    NSDictionary *version = _version;
     unsigned long long size = _size;
     NSUInteger requestLength = kSearchChunk + needle.length - 1;
-    dispatch_async(_queue, ^{
+    dispatch_async(_searchQueue, ^{
         unsigned long long found = ULLONG_MAX;
         NSString *error = nil;
-        for (unsigned long long pos = from; pos < size && found == ULLONG_MAX; ) {
-            NSUInteger length = (NSUInteger)MIN((unsigned long long)requestLength, size - pos);
-            NSData *chunk = wq_read_range(path, pos, length, &error);
-            if (!chunk || chunk.length < needle.length) break;
-            NSRange r = [chunk rangeOfData:needle options:0 range:NSMakeRange(0, chunk.length)];
-            if (r.location != NSNotFound) found = pos + r.location;
+        int fd = -1;
+        if (!cancel.cancelled && from < size) fd = wqh_open_snapshot(path, version, NULL, &error);
+        for (unsigned long long pos = from; fd >= 0 && pos < size && found == ULLONG_MAX; ) {
+            if (cancel.cancelled) break;
+            @autoreleasepool {
+                NSUInteger length = (NSUInteger)MIN((unsigned long long)requestLength, size - pos);
+                NSData *chunk = wqh_pread(fd, pos, length, &error);
+                if (cancel.cancelled || !chunk || chunk.length < needle.length) break;
+                NSRange r = [chunk rangeOfData:needle options:0 range:NSMakeRange(0, chunk.length)];
+                if (r.location != NSNotFound) found = pos + r.location;
+            }
             if (size - pos <= kSearchChunk) break;
             pos += kSearchChunk;
         }
+        if (fd >= 0) close(fd);
+        BOOL cancelled = cancel.cancelled;
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != self->_searchGeneration || !wqh_is_visible(self)) return;
+            if (cancelled || generation != self->_searchGeneration || !wqh_is_visible(self)) return;
+            if (self->_searchCancel == cancel) self->_searchCancel = nil;
             self->_status = nil;
             [self updateBar];
             if (found == ULLONG_MAX) {
                 self->_matchLength = 0;
                 [self.tableView reloadData];
-                wqh_alert(self, @"Not found", error ?: WQLocalizedFormat(@"No match after offset 0x%llx.", from));
+                wqh_alert(self, @"Not found", WQVerbatim(error ?: WQLocalizedFormat(@"No match after offset 0x%llx.", from)));
                 return;
             }
             self->_matchOffset = found;

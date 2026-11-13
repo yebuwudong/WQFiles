@@ -25,6 +25,13 @@ NS_ASSUME_NONNULL_BEGIN
 // may also contain angle brackets; the hex editor does not accept them.
 NSData *_Nullable WQParseHex(NSString *text, BOOL allowAngleBrackets);
 
+// Hex editor input for exactly `count` bytes (no angle brackets). Text longer
+// than WQHexExactInputCharacterLimit(count) is rejected before it is scanned,
+// and parsing stops at the first byte past `count`, so the result never holds
+// more than `count` bytes. nil for invalid, too short or too long input.
+NSUInteger WQHexExactInputCharacterLimit(NSUInteger count);
+NSData *_Nullable WQParseHexExactly(NSString *text, NSUInteger count);
+
 // Overflow-safe validation for an in-place patch range.
 BOOL WQPatchRangeValid(unsigned long long offset, NSUInteger length, unsigned long long fileSize);
 

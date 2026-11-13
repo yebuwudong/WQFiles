@@ -108,6 +108,15 @@ static void TestRefreshAndUnicodeSafety(NSString *path)
     WriteData(StoreWithName(@"Cafe\u0301 日本 \u202Eevil"), path);
     WQCheck([wq_display_name(@"com.example.international") isEqualToString:@"Café 日本 �evil"]);
 
+    // Invisible marks are dropped (WhatsApp's name starts with U+200E),
+    // reordering controls only wrapped around the whole name too.
+    WriteData(StoreWithName(@"\u200EWA Business"), path);
+    WQCheck([wq_display_name(@"com.example.international") isEqualToString:@"WA Business"]);
+    WriteData(StoreWithName(@"\u202B\u0648\u0627\u062A\u0633\u0627\u0628\u202C"), path);
+    WQCheck([wq_display_name(@"com.example.international") isEqualToString:@"\u0648\u0627\u062A\u0633\u0627\u0628"]);
+    WriteData(StoreWithName(@"Mail\u200D\U0001F468\u200B"), path);
+    WQCheck([wq_display_name(@"com.example.international") isEqualToString:@"Mail\u200D\U0001F468"]);
+
     WriteData(StoreWithTruncatedDisplayName(), path);
     WQCheck(wq_display_name(@"com.example.international") == nil);
 
@@ -185,6 +194,39 @@ static void TestContainerMapping(NSString *path)
     WQCheck([wq_display_name(@"com.example.app") isEqualToString:@"AppName8"]);
 }
 
+// iOS 27.3 (issue #50): app records as on 27.2 (0x25c: +0x0c id, +0x6c
+// container, +0x70 name, +0x78 display name), plugin records 0x134 bytes
+// with +0x00 id and +0x58 container.
+static NSData *Store27_3(void)
+{
+    NSMutableData *data = [NSMutableData dataWithLength:0x3000];
+    memcpy(data.mutableBytes, "bdsl", 4);
+    const NSUInteger bundle = 0x200, plugin = 0x500;
+    Put32(data, bundle + 4, 0x25c);
+    Put32(data, bundle + 8 + 0x0c, 1u << 2);
+    Put32(data, bundle + 8 + 0x6c, 2u << 2);
+    Put32(data, bundle + 8 + 0x70, 3u << 2);
+    Put32(data, bundle + 8 + 0x78, 3u << 2);
+    Put32(data, plugin + 4, 0x134);
+    Put32(data, plugin + 8 + 0x00, 4u << 2);
+    Put32(data, plugin + 8 + 0x58, 5u << 2);
+    PutString(data, 0x1000, 1, @"com.example.app");
+    PutString(data, 0x1080, 2, kAppPath);
+    PutString(data, 0x1100, 3, @"Name27.3");
+    PutString(data, 0x1180, 4, @"com.example.app.ext273");
+    PutString(data, 0x1200, 5, kPluginPath);
+    return data;
+}
+
+static void Test27_3Layout(NSString *path)
+{
+    WriteData(Store27_3(), path);
+    [NSUserDefaults.standardUserDefaults setObject:path forKey:@"WQLaunchServicesStore"];
+    WQCheck([wq_bundle_id_for_container(kAppPath) isEqualToString:@"com.example.app"]);
+    WQCheck([wq_bundle_id_for_container(kPluginPath) isEqualToString:@"com.example.app.ext273"]);
+    WQCheck([wq_display_name(@"com.example.app") isEqualToString:@"Name27.3"]);
+}
+
 static void TestOversizedStoreFailsClosed(NSString *path)
 {
     int fd = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -197,6 +239,76 @@ static void TestOversizedStoreFailsClosed(NSString *path)
     WQCheck(wq_display_name(@"com.example.international") == nil);
 }
 
+#ifdef WQ_LS_TESTING
+extern void (^wq_ls_test_after_read)(NSString *path);
+NSUInteger wq_ls_test_layout_vote_steps(NSData *data, BOOL *cutOff, NSUInteger *keys, NSUInteger *paths);
+
+// A store hint publishes one coherent snapshot (names, maps and remembered
+// location together), read with the same stable before/after check as the
+// name loader; the published snapshot is reused instead of parsed again.
+static void TestStoreHintPublishesSnapshot(NSString *path)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    WriteData(StoreWithName(@"Old name"), path);
+    [defaults setObject:path forKey:@"WQLaunchServicesStore"];
+    WQCheck([wq_display_name(@"com.example.international") isEqualToString:@"Old name"]);
+
+    NSString *hint = [path stringByAppendingString:@".hint"];
+    WriteData(StoreWithContainers(), hint);
+    __block BOOL mutate = YES;
+    __block int reads = 0;
+    wq_ls_test_after_read = ^(NSString *readPath) {
+        if (![readPath isEqualToString:hint]) return;
+        reads++;
+        if (!mutate) return;
+        NSMutableData *grown = [StoreWithContainers() mutableCopy];
+        [grown increaseLengthBy:0x100];
+        WriteData(grown, hint);
+    };
+    WQCheck(wq_ls_container_paths(hint) == nil);   // rewritten while it was read
+    WQCheck([[defaults stringForKey:@"WQLaunchServicesStore"] isEqualToString:path]);
+    WQCheck([wq_display_name(@"com.example.international") isEqualToString:@"Old name"]);
+
+    mutate = NO;
+    WriteData(StoreWithContainers(), hint);
+    NSArray<NSString *> *paths = wq_ls_container_paths(hint);
+    WQCheck([paths containsObject:kAppPath] && [paths containsObject:kPluginPath]);
+    WQCheck([[defaults stringForKey:@"WQLaunchServicesStore"] isEqualToString:hint]);
+    WQCheck([wq_display_name(@"com.example.app") isEqualToString:@"AppName8"]);
+    WQCheck([wq_bundle_id_for_container(kAppPath) isEqualToString:@"com.example.app"]);
+    WQCheck(wq_display_name(@"com.example.international") == nil);   // old snapshot replaced
+
+    reads = 0;
+    WQCheck([wq_ls_container_paths(nil) count] == paths.count && reads == 0);   // snapshot reused
+    wq_ls_test_after_read = nil;
+    [[NSFileManager defaultManager] removeItemAtPath:hint error:nil];
+    [defaults setObject:path forKey:@"WQLaunchServicesStore"];
+}
+
+// The low-mapping layout diagnostics stop at a fixed work budget however
+// many references a malformed store repeats.
+static void TestLayoutDiagnosticsBudget(void)
+{
+    NSMutableData *data = [NSMutableData dataWithLength:2u * 1024u * 1024u];
+    memcpy(data.mutableBytes, "bdsl", 4);
+    NSMutableArray<NSNumber *> *refs = [NSMutableArray new];
+    for (uint32_t i = 0; i < 30; i++) {
+        NSString *container = [NSString stringWithFormat:@"/private/var/mobile/Containers/Data/Application/%@",
+                               NSUUID.UUID.UUIDString];
+        PutString(data, 0x1000 + i * 0x80, i + 1, container);
+        [refs addObject:@((i + 1) << 2)];
+    }
+    for (NSUInteger o = 0x4000; o + 4 <= data.length; o += 4) Put32(data, o, refs[(o / 4) % refs.count].unsignedIntValue);
+    BOOL cutOff = NO;
+    NSUInteger keys = 0, pathCount = 0;
+    NSUInteger steps = wq_ls_test_layout_vote_steps(data, &cutOff, &keys, &pathCount);
+    WQCheck(pathCount == 30);
+    WQCheck(cutOff);
+    WQCheck(steps <= (1u << 20) + 1);
+    WQCheck(keys <= 1024);
+}
+#endif
+
 int main(void)
 {
     @autoreleasepool {
@@ -206,7 +318,12 @@ int main(void)
             [NSUserDefaults.standardUserDefaults removeObjectForKey:@"WQLaunchServicesStore"];
             TestRetryAfterDiscoveryFailure(path);
             TestRefreshAndUnicodeSafety(path);
+#ifdef WQ_LS_TESTING
+            TestStoreHintPublishesSnapshot(path);
+            TestLayoutDiagnosticsBudget();
+#endif
             TestContainerMapping(path);
+            Test27_3Layout(path);
             TestOversizedStoreFailsClosed(path);
         } @finally {
             [[NSFileManager defaultManager] removeItemAtPath:path error:nil];

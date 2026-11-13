@@ -36,6 +36,34 @@ int main(void)
             check([fm fileExistsAtPath:[library stringByAppendingPathComponent:@".wq-caches-preserved/nested/sentinel"]], @"conflict retains preserved original");
             check(unlinkat(fd, "Caches", AT_REMOVEDIR) == 0 && WQCacheSwapRecover(fd), @"recover after fixture conflict removed");
             check(WQCacheSwapRecover(fd), @"recovery idempotent");
+            // Reset Access Cache (#42): a foreign Caches link without our
+            // marker blocks every token; reset clears it, keeps everything.
+            check(renameat(fd, "Caches", fd, "Caches-real") == 0 && symlinkat("/private/var/other-app-target", fd, "Caches") == 0,
+                  @"simulate another app's Caches link");
+            check(!WQCacheSwapBegin(fd, @"/private/var/nonexistent-token-target"), @"a foreign link blocks token requests");
+            NSMutableArray *steps = [NSMutableArray new];
+            check(WQCacheSwapReset(fd, steps) && steps.count, @"reset repairs a foreign link");
+            struct stat cst;
+            check(fstatat(fd, "Caches", &cst, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(cst.st_mode), @"Caches is a folder again");
+            check(rmdir([library stringByAppendingPathComponent:@"Caches"].fileSystemRepresentation) == 0 &&
+                  renameat(fd, "Caches-real", fd, "Caches") == 0, @"restore real Caches fixture");
+            // Interrupted swap whose saved folder conflicts with a new Caches.
+            check(WQCacheSwapBegin(fd, @"/private/var/nonexistent-token-target"), @"begin reset conflict fixture");
+            check(unlinkat(fd, "Caches", 0) == 0 && mkdirat(fd, "Caches", 0755) == 0, @"new Caches beside the preserved one");
+            check(!WQCacheSwapRecover(fd), @"recovery refuses the conflict");
+            [steps removeAllObjects];
+            check(WQCacheSwapReset(fd, steps), @"reset resolves the conflict");
+            check(WQCacheSwapRecover(fd) && WQCacheSwapBegin(fd, @"/private/var/nonexistent-token-target") && WQCacheSwapRecover(fd),
+                  @"token requests work after reset");
+            NSArray *kept = [[fm contentsOfDirectoryAtPath:library error:nil] filteredArrayUsingPredicate:
+                             [NSPredicate predicateWithFormat:@"SELF BEGINSWITH '.wq-caches-reset-'"]];
+            check(kept.count == 1 && [fm fileExistsAtPath:[library stringByAppendingPathComponent:
+                  [kept.firstObject stringByAppendingPathComponent:@"nested/sentinel"]]], @"reset kept the original contents");
+            [steps removeAllObjects];
+            check(WQCacheSwapReset(fd, steps) && steps.count == 0, @"reset of a healthy cache does nothing");
+            check([fm removeItemAtPath:[library stringByAppendingPathComponent:kept.firstObject] error:nil] &&
+                  [fm createDirectoryAtPath:nested withIntermediateDirectories:YES attributes:nil error:nil] &&
+                  [bytes writeToFile:sentinel atomically:YES], @"restore sentinel fixture");
             check(WQRecoverCacheSwapAtPath(library), @"normal startup requires no recovery");
             check(![fm fileExistsAtPath:[library stringByAppendingPathComponent:@".wq-caches-lock"]], @"normal startup creates no lock or marker");
             check(WQCacheSwapBegin(fd, @"/private/var/nonexistent-token-target"), @"begin startup recovery fixture");
@@ -89,6 +117,58 @@ int main(void)
                 check(child >= 0, @"no-follow walk does not require ancestor enumeration");
                 close(child);
             } @finally { chmod(parent.fileSystemRepresentation, 0700); }
+
+            // CR-13: a non-regular .wq-caches-lock (link or folder) keeps
+            // blocking token requests, but explicit repair moves it aside
+            // without following it, creates a regular lock and then resets.
+            for (NSString *kind in @[@"link", @"folder"]) {
+                NSString *library3 = [base stringByAppendingPathComponent:[@"Library-lock-" stringByAppendingString:kind]];
+                NSString *nested3 = [library3 stringByAppendingPathComponent:@"Caches/nested"];
+                check([fm createDirectoryAtPath:nested3 withIntermediateDirectories:YES attributes:nil error:nil], @"create lock fixture library");
+                NSString *sentinel3 = [nested3 stringByAppendingPathComponent:@"sentinel"];
+                check([bytes writeToFile:sentinel3 atomically:YES], @"write lock fixture sentinel");
+                NSString *target = [base stringByAppendingPathComponent:[@"lock-target-" stringByAppendingString:kind]];
+                check([[@"foreign" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:target atomically:YES], @"lock link target");
+                int fd3 = WQOpenDirectoryNoLinks(library3);
+                check(fd3 >= 0, @"open lock fixture library");
+                check(WQCacheSwapBegin(fd3, @"/private/var/nonexistent-token-target"), @"interrupted swap beside a bad lock");
+                if ([kind isEqual:@"link"]) {
+                    check(symlinkat(target.fileSystemRepresentation, fd3, ".wq-caches-lock") == 0, @"symlink lock fixture");
+                } else {
+                    check(mkdirat(fd3, ".wq-caches-lock", 0700) == 0, @"directory lock fixture");
+                    int inner = openat(fd3, ".wq-caches-lock/inner", O_WRONLY | O_CREAT | O_EXCL, 0600);
+                    check(inner >= 0 && write(inner, "inner", 5) == 5, @"directory lock content");
+                    close(inner);
+                }
+                check(WQOpenRegularAt(fd3, ".wq-caches-lock", O_RDWR | O_CREAT, 0600) < 0 && !WQRecoverCacheSwapAtPath(library3),
+                      @"normal lock requests stay fail-closed on a non-regular lock");
+                NSMutableArray *repairSteps = [NSMutableArray new];
+                int repaired = WQCacheLockOpenForRepair(fd3, repairSteps);
+                check(repaired >= 0 && flock(repaired, LOCK_EX | LOCK_NB) == 0, @"repair creates and locks a regular lock");
+                struct stat lockSt;
+                check(fstatat(fd3, ".wq-caches-lock", &lockSt, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(lockSt.st_mode), @"lock is a regular file again");
+                NSArray *quarantined = [[fm contentsOfDirectoryAtPath:library3 error:nil] filteredArrayUsingPredicate:
+                                        [NSPredicate predicateWithFormat:@"SELF BEGINSWITH '.wq-caches-lock-quarantine-'"]];
+                check(quarantined.count == 1, @"bad lock quarantined, not deleted");
+                NSString *q = [library3 stringByAppendingPathComponent:quarantined.firstObject];
+                if ([kind isEqual:@"link"])
+                    check([[fm destinationOfSymbolicLinkAtPath:q error:nil] isEqual:target] &&
+                          [[NSData dataWithContentsOfFile:target] isEqual:[@"foreign" dataUsingEncoding:NSUTF8StringEncoding]],
+                          @"symlink lock target never followed or changed");
+                else
+                    check([[NSData dataWithContentsOfFile:[q stringByAppendingPathComponent:@"inner"]] isEqual:[@"inner" dataUsingEncoding:NSUTF8StringEncoding]],
+                          @"directory lock contents kept");
+                check(WQCacheSwapReset(fd3, repairSteps) && [[NSData dataWithContentsOfFile:sentinel3] isEqual:bytes],
+                      @"reset after lock repair restores the preserved Caches");
+                close(repaired);
+                check(WQRecoverCacheSwapAtPath(library3) && WQCacheSwapBegin(fd3, @"/private/var/nonexistent-token-target") &&
+                      WQCacheSwapRecover(fd3), @"token requests work after lock repair");
+                [repairSteps removeAllObjects];
+                int again = WQCacheLockOpenForRepair(fd3, repairSteps);
+                check(again >= 0 && repairSteps.count == 0, @"repair of a healthy lock does nothing");
+                close(again);
+                close(fd3);
+            }
             check(!WQAbsolutePathGrammar(@"/private/var/../file") && !WQAbsolutePathGrammar(@"/private//var/file"), @"grammar rejects traversal and ambiguous empty components");
             close(fd);
         } @finally {

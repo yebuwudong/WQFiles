@@ -6,6 +6,10 @@
 #import "WQMediaStream.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
+#import <sys/stat.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
 
 static NSString *const kWQMediaScheme = @"wqmedia";
 static const NSUInteger kWQMediaChunk = 512 * 1024;
@@ -22,6 +26,17 @@ static char kWQMediaStreamKey;
 
 @implementation WQMediaStream {
     dispatch_queue_t _readQueue;
+}
+
++ (BOOL)opensAsMediaByDefault:(NSString *)name
+{
+    static NSSet<NSString *> *exts;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        exts = [NSSet setWithArray:@[@"mp3", @"m4a", @"m4b", @"aac", @"wav", @"aif", @"aiff", @"caf", @"flac", @"alac",
+                                     @"mp4", @"m4v", @"mov", @"3gp", @"3g2"]];
+    });
+    return [exts containsObject:name.pathExtension.lowercaseString];
 }
 
 + (NSString *)contentTypeForFileName:(NSString *)name
@@ -77,6 +92,12 @@ static char kWQMediaStreamKey;
     NSString *reason = item.error.localizedDescription ?: @"the player failed";
     NSError *underlying = item.error.userInfo[NSUnderlyingErrorKey];
     if (underlying) reason = [reason stringByAppendingFormat:@" (%@ %ld)", underlying.domain, (long)underlying.code];
+    [self failOnce:reason];
+}
+
+// Runs onFailure once, on the main queue, whichever path notices first.
+- (void)failOnce:(NSString *)reason
+{
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.failed) return;
         self.failed = YES;
@@ -119,8 +140,12 @@ static char kWQMediaStreamKey;
             NSData *chunk = [self dataForOffset:(unsigned long long)offset length:length error:&error];
             if (!chunk.length) {
                 if (request.isCancelled || request.isFinished) return;
+                NSString *reason = error ?: @"The file could not be read";
                 [request finishLoadingWithError:[NSError errorWithDomain:@"WQMediaStream" code:1
-                    userInfo:@{NSLocalizedDescriptionKey: error ?: @"The file could not be read"}]];
+                    userInfo:@{NSLocalizedDescriptionKey: reason}]];
+                // Don't wait for the player to give up (it may retry or
+                // stall): a failed read means the stream can't be trusted.
+                [self failOnce:reason];
                 return;
             }
             [data respondWithData:chunk];
@@ -129,6 +154,62 @@ static char kWQMediaStreamKey;
         if (!request.isCancelled && !request.isFinished) [request finishLoading];
     });
     return YES;
+}
+
+@end
+
+@implementation WQMediaFileReader {
+    int _fd;
+    struct stat _origin;
+}
+
+static BOOL WQMediaSameGeneration(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino && a->st_size == b->st_size &&
+           a->st_mtimespec.tv_sec == b->st_mtimespec.tv_sec && a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec;
+}
+
+- (instancetype)initWithDescriptor:(int)fd
+{
+    if (fd < 0) return nil;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { close(fd); return nil; }
+    if ((self = [super init])) {
+        _fd = fd;
+        _origin = st;
+        _size = (unsigned long long)st.st_size;
+    } else {
+        close(fd);
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    if (_fd >= 0) close(_fd);
+}
+
+- (NSData *)readOffset:(unsigned long long)offset length:(NSUInteger)length error:(NSString **)error
+{
+    if (offset > _size) { if (error) *error = @"read past the end of the file"; return nil; }
+    NSUInteger want = (NSUInteger)MIN((unsigned long long)length, _size - offset);
+    NSMutableData *data = [NSMutableData dataWithLength:want];
+    NSUInteger got = 0;
+    while (got < want) {
+        ssize_t n = pread(_fd, (uint8_t *)data.mutableBytes + got, want - got, (off_t)(offset + got));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) { if (error) *error = [NSString stringWithUTF8String:strerror(errno)]; return nil; }
+        if (n == 0) break;
+        got += (NSUInteger)n;
+    }
+    // After the read: a change before or during it shows up here.
+    struct stat now;
+    if (fstat(_fd, &now) != 0 || !WQMediaSameGeneration(&_origin, &now)) {
+        if (error) *error = @"the file changed while it was playing";
+        return nil;
+    }
+    if (got != want) { if (error) *error = @"the file is shorter than when it was opened"; return nil; }
+    return data;
 }
 
 @end

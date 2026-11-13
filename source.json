@@ -1,32 +1,51 @@
 {
-  "name": "WQ 文件（汉化）",
-  "identifier": "cz.kolbi.wqfiles.zh.source",
-  "subtitle": "iOS 26/27 文件管理器 · 汉化版",
-  "description": "WQ Files 汉化版，基于 kolbicz/WQFiles 自动构建。",
+  "name": "Worse Query Files",
+  "identifier": "cz.kolbi.wqfiles.source",
+  "subtitle": "File manager for iOS 26 and 27",
+  "description": "AltStore / SideStore source for WQ Files by kolbicz.",
   "iconURL": "https://raw.githubusercontent.com/kolbicz/WQFiles/main/icons/AppIcon1024.png",
-  "website": "https://github.com/yebuwudong/WQFiles",
+  "website": "https://github.com/kolbicz/WQFiles",
   "tintColor": "#1E8FC7",
   "featuredApps": [
     "cz.kolbi.wqfiles"
   ],
   "apps": [
     {
-      "name": "WQ 文件（汉化）",
+      "name": "WQ Files",
       "bundleIdentifier": "cz.kolbi.wqfiles",
-      "developerName": "kolbicz / 汉化：yebuwudong",
-      "subtitle": "iOS 26/27 文件管理器（worse_query）· 汉化版",
-      "localizedDescription": "使用苹果官方简体中文界面的 WQ Files：iOS 26/27 的文件浏览器、App 数据管理与缓存清理工具，基于 worse_query 沙盒技术，无需越狱。\n\n• 浏览每个 App 的数据容器、App 群组、扩展与守护进程容器\n• 属性列表编辑器与十六进制查看/编辑器，改动前先备份\n• 备份、还原、清除 App 数据，备份可打包成 ZIP 通过 AirDrop 分享\n• 缓存清理\n\n支持 iOS 26 与 27；iOS 26 上无法访问系统数据和系统群组。需要会保留 App Group 权限的签名工具。",
+      "developerName": "kolbicz",
+      "subtitle": "File manager for iOS 26 and 27 (worse_query)",
+      "localizedDescription": "File browser, app data manager and cache cleaner for iOS 26 and 27, built on the worse_query sandbox technique. No jailbreak and no kernel exploit.\n\n• Browse every app's data container, app groups, extension and daemon containers\n• Plist editor and hex viewer/editor; edits are backed up first\n• Select, move across apps, compress and extract ZIPs; import files and whole folders\n• Syntax highlighting, SQLite viewer and media player\n• Back up, restore and clear app data; AirDrop backups as ZIP\n• Cache cleaner\n\niOS 26 and 27 (tested on 26.7.1, 27.0.1 and 27.2.1; on iOS 26, System Data and System Groups are not available). Needs a signer that keeps the App Group entitlement (AltStore, SideStore or Impactor; not Sideloadly).",
       "iconURL": "https://raw.githubusercontent.com/kolbicz/WQFiles/main/icons/AppIcon1024.png",
       "tintColor": "#1E8FC7",
       "category": "utilities",
       "versions": [
         {
+          "version": "0.9.5",
+          "buildVersion": "73",
+          "date": "2026-11-12",
+          "size": 715465,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.5/WQFiles.ipa",
+          "localizedDescription": "New: iOS 27.3 beta, Turkish, flags in the language list, Replace All when importing several files, Rename in Select, restore edited backups. Many safety fixes from a code review (folder delete, SQLite backups, ZIP, hex and plist editors, media).",
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "0.9.4",
+          "buildVersion": "69",
+          "date": "2026-11-12",
+          "size": 647595,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.4/WQFiles.ipa",
+          "localizedDescription": "New: delete folders with everything in them (backed up, restorable), Polish and Russian, filters in App Data, version in the device strip, Reset Access Cache. Fixed: backups with sockets, Share as ZIP of app folders, app names.",
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "0.9.3",
           "buildVersion": "59",
-          "date": "2026-11-12",
-          "size": 565099,
-          "downloadURL": "https://github.com/yebuwudong/WQFiles/releases/download/zh-latest/WQFiles-zh.ipa",
-          "localizedDescription": "汉化版 0.9.3（build 59）。"
+          "date": "2026-11-11",
+          "size": 559984,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.3/WQFiles.ipa",
+          "localizedDescription": "New: startup check (stops with what failed instead of empty lists when access breaks), Recently Deleted under Backups. Cache Cleaner progress bar.",
+          "minOSVersion": "26.0"
         },
         {
           "version": "0.9.2",
@@ -50,9 +69,10 @@
           "version": "0.9",
           "buildVersion": "38",
           "date": "2026-11-11",
-          "size": 397991,
-          "downloadURL": "https://github.com/yebuwudong/WQFiles/releases/download/zh-latest/WQFiles-zh.ipa",
-          "localizedDescription": "汉化版 0.9（build 38）。"
+          "size": 359440,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9/WQFiles.ipa",
+          "localizedDescription": "Select, move across apps, compress and extract ZIPs; import several files or whole folders. New: syntax highlighting, media player, Apps filter, bundle IDs and Copy Bundle ID, restore from App Backups, Allow Deleting and Show Item Counts settings. Fixed: iOS 26.5 app list, deleting locked files. Signing: use AltStore, SideStore or Impactor (Sideloadly drops the App Group).",
+          "minOSVersion": "26.0"
         },
         {
           "version": "0.8",

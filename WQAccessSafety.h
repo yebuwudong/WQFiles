@@ -209,6 +209,74 @@ static inline BOOL WQRecoverCacheSwapAtPath(NSString *libraryPath)
     return ok;
 }
 
+// Manual repair (the startup check's Reset Access Cache): puts Library/Caches
+// back to a plain folder whatever state it is in, e.g. a symbolic link left
+// by another worse_query app sharing the App Group (issue #42). Nothing is
+// deleted: anything in the way is renamed to .wq-caches-reset-<id>. `done`
+// gets a short description of the steps, for the Log.
+static inline BOOL WQCacheSwapReset(int library, NSMutableArray<NSString *> *done)
+{
+    if (unlinkat(library, WQCacheMarkerTemp, 0) == 0) [done addObject:@"removed the temporary marker"];
+    NSString *(^aside)(void) = ^NSString *{ return [@".wq-caches-reset-" stringByAppendingString:NSUUID.UUID.UUIDString]; };
+    struct stat st;
+    if (fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (S_ISLNK(st.st_mode)) {
+            if (unlinkat(library, "Caches", 0) != 0) return NO;
+            [done addObject:@"removed the Caches link"];
+        } else if (!S_ISDIR(st.st_mode)) {
+            NSString *name = aside();
+            if (renameatx_np(library, "Caches", library, name.fileSystemRepresentation, RENAME_EXCL) != 0) return NO;
+            [done addObject:[@"moved a non-folder Caches to " stringByAppendingString:name]];
+        }
+    } else if (errno != ENOENT) return NO;
+    if (fstatat(library, WQCacheSaved, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        BOOL cachesFree = fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT;
+        if (cachesFree) {
+            if (renameatx_np(library, WQCacheSaved, library, "Caches", RENAME_EXCL) != 0) return NO;
+            [done addObject:@"restored the preserved Caches"];
+        } else {
+            NSString *name = aside();
+            if (renameatx_np(library, WQCacheSaved, library, name.fileSystemRepresentation, RENAME_EXCL) != 0) return NO;
+            [done addObject:[@"moved the preserved Caches to " stringByAppendingString:name]];
+        }
+    } else if (errno != ENOENT) return NO;
+    if (unlinkat(library, WQCacheMarker, 0) == 0) [done addObject:@"removed the swap marker"];
+    else if (errno != ENOENT) return NO;
+    if (fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno != ENOENT || mkdirat(library, "Caches", 0755) != 0) return NO;
+        [done addObject:@"created Caches"];
+    } else if (!S_ISDIR(st.st_mode)) { errno = EINVAL; return NO; }
+    return fsync(library) == 0;
+}
+
+// Explicit repair only (Reset Access Cache). Token requests keep refusing a
+// .wq-caches-lock that is not a regular file. Repair moves such an entry (a
+// link, folder, pipe...) aside with a no-replace rename to
+// .wq-caches-lock-quarantine-<id>; its target and contents are never
+// followed, opened or removed. Then a new regular lock is created exclusively.
+// Returns the open lock descriptor, or -1 with errno set.
+static const char *const WQCacheLock = ".wq-caches-lock";
+static inline int WQCacheLockOpenForRepair(int library, NSMutableArray<NSString *> *done)
+{
+    int lock = WQOpenRegularAt(library, WQCacheLock, O_RDWR | O_CREAT, 0600);
+    if (lock >= 0) return lock;
+    struct stat st;
+    if (fstatat(library, WQCacheLock, &st, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    if (S_ISREG(st.st_mode)) { errno = EBUSY; return -1; }   // a regular lock that still could not be opened
+    NSString *name = [@".wq-caches-lock-quarantine-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    if (renameatx_np(library, WQCacheLock, library, name.fileSystemRepresentation, RENAME_EXCL) != 0) return -1;
+    struct stat moved;
+    BOOL same = fstatat(library, name.fileSystemRepresentation, &moved, AT_SYMLINK_NOFOLLOW) == 0 && WQSameObject(&moved, &st);
+    NSString *kind = S_ISLNK(st.st_mode) ? @"link" : S_ISDIR(st.st_mode) ? @"folder" : @"special file";
+    [done addObject:[NSString stringWithFormat:@"moved a non-regular lock (%@%@) to %@", kind,
+                     same ? @"" : @", replaced meanwhile", name]];
+    lock = WQOpenRegularAt(library, WQCacheLock, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (lock < 0) return -1;
+    if (fsync(library) != 0) { int err = errno; close(lock); errno = err; return -1; }
+    [done addObject:@"created a new lock"];
+    return lock;
+}
+
 static inline BOOL WQCacheSwapBegin(int library, NSString *target)
 {
     if (!WQCacheSwapRecover(library)) return NO;
@@ -319,5 +387,37 @@ static inline BOOL WQBackupStampValid(NSString *stamp)
     BOOL valid = date && [[fmt stringFromDate:date] isEqualToString:datePart];
     [cache setObject:@(valid) forKey:stamp];
     return valid;
+}
+
+// One numeric field of a valid stamp (digits only, overflow already ruled out
+// by WQBackupStampValid).
+static inline uint64_t WQBackupStampField(NSString *part)
+{
+    uint64_t number = 0;
+    for (NSUInteger i = 0; i < part.length; i++) number = number * 10 + (uint64_t)([part characterAtIndex:i] - '0');
+    return number;
+}
+
+// Chronological order of backup unit names: date-time, then milliseconds,
+// then the counter as a number ("-10" is newer than "-9"). A legacy stamp
+// without milliseconds or counter sorts before one with them at the same
+// prefix. Invalid names fall back to text order, after every valid stamp.
+// The time is local wall-clock time: a later clock or time-zone rollback can
+// still make a newer unit compare older (the format stores no offset).
+static inline NSComparisonResult WQBackupStampCompare(NSString *a, NSString *b)
+{
+    BOOL validA = WQBackupStampValid(a), validB = WQBackupStampValid(b);
+    if (!validA || !validB) {
+        if (validA != validB) return validA ? NSOrderedAscending : NSOrderedDescending;
+        return [a compare:b];
+    }
+    NSArray<NSString *> *pa = [a componentsSeparatedByString:@"-"], *pb = [b componentsSeparatedByString:@"-"];
+    for (NSUInteger i = 0; i < MAX(pa.count, pb.count); i++) {
+        if (i >= pa.count) return NSOrderedAscending;
+        if (i >= pb.count) return NSOrderedDescending;
+        uint64_t x = WQBackupStampField(pa[i]), y = WQBackupStampField(pb[i]);
+        if (x != y) return x < y ? NSOrderedAscending : NSOrderedDescending;
+    }
+    return NSOrderedSame;
 }
 #endif

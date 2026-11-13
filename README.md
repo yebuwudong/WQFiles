@@ -5,7 +5,7 @@ and 27. "WQ" stands for worse_query, the sandbox technique it is built on. It
 reaches other apps' and system containers with no jailbreak and no kernel
 exploit. Tested on iOS 26.7.1, 27.0.1 and 27.2.
 
-**iOS 26 (26.0 to 26.7.2):** preliminary support since 0.7; tested on 26.7.1. worse_query reaches the app, extension, daemon and app group
+**iOS 26 (26.0 to 26.7.2):** supported since 0.7; tested on 26.7.1. worse_query reaches the app, extension, daemon and app group
 containers there, but not System Data or the system groups, so WQ Files hides
 those two and the Cache Cleaner has no crash-log section. A full inode scan
 would take most of an hour on iOS 26, so App Data, Extension Data and App
@@ -16,9 +16,10 @@ app data, the Cache Cleaner and the file browser work as on iOS 27. App icons
 don't: iOS 26 hands WQ Files only placeholder icons and doesn't let it read
 other apps' bundles, so apps show symbol tiles.
 
-WQ Files is available in English, German, Italian, Spanish, Korean, Arabic
-and Simplified Chinese. It follows the device language; **Language** in WQ Files'
-Settings picks another, used from the next start.
+WQ Files is available in English, German, Italian, Spanish, Portuguese
+(Brazil), Russian, Polish, Turkish, Korean, Arabic and Simplified Chinese. It follows
+the device language; **Language** in WQ Files' Settings picks another, used
+from the next start.
 
 ## What it opens
 
@@ -124,8 +125,11 @@ Before a regular file is overwritten or deleted, its contents are copied to
 backup to restore it to its original location. **Recently Deleted** (under
 Backups on the start screen) lists the backed-up files whose original is gone,
 newest first: restore one to where it was (missing folders are created), or
-delete it from Backups for good. In the file browser only empty
-folders can be deleted; symbolic links are removed as links. Clearing an app's
+delete it from Backups for good. Deleting a folder deletes everything in it
+after saying how many files that is; every file is copied to Backups first
+(one backup for the whole folder), so it can be restored from Recently
+Deleted. App and system containers themselves (and the folders above them)
+can't be deleted. Symbolic links are removed as links. Clearing an app's
 data and cleaning caches delete without a file-by-file backup; Apps offers to
 back up Documents and Library first, while `tmp` is discarded and cannot be
 restored. Close the target app before backup, restore, or clear. App copies are
@@ -256,14 +260,14 @@ concurrent writes still require supported-device validation.
 
 ## Translations
 
-WQ Files is in English, German, Italian, Spanish, Korean, Arabic and
-Simplified Chinese. New languages and corrections are welcome as pull requests:
+WQ Files is in English, German, Italian, Spanish, Portuguese (Brazil), Russian, Polish, Turkish, Korean,
+Arabic and Simplified Chinese. New languages and corrections are welcome as pull requests:
 
 - **Correct a translation:** edit the line in `<language>.lproj/Localizable.strings`
   (for example `it.lproj`). The English text on the left is the key; change
   only the text on the right.
 - **Add a language:** copy `en.lproj` to a folder named with the language code
-  (`fr.lproj`, `pt-BR.lproj`…), translate the right-hand side, and add the code
+  (`fr.lproj`, `pt-PT.lproj`…), translate the right-hand side, and add the code
   to `CFBundleLocalizations` in `Info.plist` and to `LANGUAGES` in
   `tests/test_localization.py`. The language then appears in WQ Files'
   Language setting by itself.
@@ -271,7 +275,7 @@ Simplified Chinese. New languages and corrections are welcome as pull requests:
   English text, and leave paths, file names and `WQ Files` as they are.
   `python3 -m unittest tests.test_localization` checks this.
 
-German, Italian and Spanish, and the newest Chinese, Arabic and Korean strings, are
+German, Italian, Spanish, Portuguese, Polish and Turkish, and the newest Chinese, Arabic and Korean strings, are
 machine translations so far: corrections from native speakers are especially
 welcome.
 
@@ -286,6 +290,7 @@ welcome.
 - Arabic translation: [hfip](https://github.com/hfip)
   ([#39](https://github.com/kolbicz/WQFiles/issues/39)).
 - Korean translation: [hooray804](https://github.com/hooray804)
+- Russian translation: [Reinascape](https://github.com/Reinascape)
   ([#40](https://github.com/kolbicz/WQFiles/pull/40)).
 
 WQ Files is GPL-3.0-or-later (see `LICENSE`).

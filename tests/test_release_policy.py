@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import importlib.util
 import plistlib
 import unittest
 from pathlib import Path
@@ -31,12 +32,16 @@ class ReleasePolicyTests(unittest.TestCase):
             ["group.cz.kolbi.wqfiles"],
         )
 
-    def test_build_and_catalog_policy_are_explicitly_26_0(self):
-        build_script = (ROOT / "build.sh").read_text(encoding="utf-8")
-        updater = (ROOT / "scripts" / "update_source.py").read_text(encoding="utf-8")
-        self.assertIn("MINIMUM_IOS_VERSION=26.0", build_script)
-        self.assertIn('MINIMUM_IOS_VERSION = "26.0"', updater)
-
+    def test_catalog_policy_is_explicitly_26_0(self):
+        # Load the updater and check its active constant, not source text.
+        # The build's effective deployment target is checked by running
+        # build.sh with fake tools (test_build.test_compiles_for_the_info_plist_minimum_os).
+        spec = importlib.util.spec_from_file_location(
+            "wq_update_source_policy", ROOT / "scripts" / "update_source.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        self.assertEqual(module.MINIMUM_IOS_VERSION, "26.0")
 
 if __name__ == "__main__":
     unittest.main()

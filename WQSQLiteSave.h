@@ -25,7 +25,10 @@ NSDictionary *_Nullable wq_sqlite_source_state(NSString *path);
 // writes it over `original` and empties the original's -wal and -shm.
 // `state` is what wq_sqlite_source_state returned when the copy was made;
 // *newState gets the state after saving (for the next save), *backupUnit the
-// Backups folder holding the previous database.
+// Backups folder holding the previous database: one unit with the old main
+// file with its old -wal checkpointed into it (so it holds every committed
+// row on its own) and, if the app had a -wal, an empty -wal beside it.
+// Restoring that unit (or just its main file) restores the whole database.
 BOOL wq_sqlite_save(sqlite3 *copyDB, NSString *copyPath, NSString *original, NSDictionary *state,
                     NSDictionary *_Nullable *_Nullable newState, NSString *_Nullable *_Nullable backupUnit,
                     NSString *_Nullable *_Nullable error);

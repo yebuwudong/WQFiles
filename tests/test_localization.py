@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = re.compile(r'^("(?:\\.|[^"\\])*")\s*=\s*("(?:\\.|[^"\\])*");$')
-PLACEHOLDER = re.compile(r'%(?:\d+\$)?(?:lld|llu|lu|ld|[dio@a-zA-Z])')
+PLACEHOLDER = re.compile(r"%(?:\d+\$)?[-+ #0']*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|ll|[hljztLq])?[@diuoxXfFeEgGaAcCsSpn%]")
 
 
 def read_table(path: Path) -> dict[str, str]:
@@ -25,7 +25,7 @@ def read_table(path: Path) -> dict[str, str]:
     return entries
 
 
-LANGUAGES = ("zh-Hans", "de", "ar", "it", "es", "ko")
+LANGUAGES = ("zh-Hans", "de", "ar", "it", "es", "ko", "pt-BR", "ru", "pl", "tr")
 # Embeddings, overrides and isolates can hide or reorder text; the plain
 # LRM/RLM marks are allowed (Arabic uses LRM before a path like /private/var).
 BIDI_CONTROLS = re.compile("[\u202a-\u202e\u2066-\u2069]")
@@ -95,6 +95,24 @@ class LocalizationTests(unittest.TestCase):
         for path in ROOT.glob("*.m"):
             source = path.read_text(encoding="utf-8")
             self.assertNotRegex(source, r'\?\s*@""\s*:\s*@"(?:s|es)"', str(path))
+
+    def test_plist_date_and_data_actions_stay_distinct(self):
+        # The Add sheet localizes the type key exactly once. A second lookup
+        # of the translated "Date" ("Data" in it/pl/pt-BR) would yield the
+        # translation of the Data type and collapse the two actions.
+        for language in ("it", "pl", "pt-BR"):
+            table = read_table(ROOT / f"{language}.lproj/Localizable.strings")
+            date_label, data_label = table["Date"], table["Data"]
+            self.assertNotEqual(date_label, data_label, language)
+            self.assertEqual(table.get(date_label), data_label, f"{language}: double lookup hazard no longer present?")
+        source = (ROOT / "WQPlistEditor.m").read_text(encoding="utf-8")
+        self.assertIn("wq_alert_action(wqp_type_key(t)", source)
+        self.assertNotRegex(source, r"wq_alert_action\(\s*wqp_type_name\(")
+        self.assertIn("return WQVerbatim(WQLocalized(wqp_type_key(t)));", source)
+
+    def test_localized_lookup_honors_verbatim(self):
+        source = (ROOT / "WQLocalization.m").read_text(encoding="utf-8")
+        self.assertRegex(source, r"if \(!key\.length \|\| WQIsVerbatim\(key\)\) return key;")
 
     def test_bundle_and_build_declare_localizations(self):
         info = plistlib.loads((ROOT / "Info.plist").read_bytes())

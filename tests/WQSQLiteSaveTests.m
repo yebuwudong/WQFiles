@@ -36,11 +36,11 @@ static void makeAppDB(NSString *path)
     sqlite3_close(db);
 }
 
-static NSArray<NSString *> *texts(NSString *path)
+static NSArray<NSString *> *textsOpened(NSString *path, int flags)
 {
     sqlite3 *db = NULL;
     NSMutableArray *out = [NSMutableArray new];
-    if (sqlite3_open_v2(path.fileSystemRepresentation, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) return out;
+    if (sqlite3_open_v2(path.fileSystemRepresentation, &db, flags, NULL) != SQLITE_OK) return out;
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, "SELECT text FROM notes ORDER BY id", -1, &stmt, NULL) == SQLITE_OK)
         while (sqlite3_step(stmt) == SQLITE_ROW) [out addObject:@((const char *)sqlite3_column_text(stmt, 0))];
@@ -48,6 +48,11 @@ static NSArray<NSString *> *texts(NSString *path)
     sqlite3_close(db);
     return out;
 }
+
+static NSArray<NSString *> *texts(NSString *path) { return textsOpened(path, SQLITE_OPEN_READONLY); }
+// A restored database opened the way the app would (it may need to create
+// its -wal/-shm).
+static NSArray<NSString *> *restoredTexts(NSString *path) { return textsOpened(path, SQLITE_OPEN_READWRITE); }
 
 static unsigned long long sizeOf(NSString *path)
 {
@@ -100,6 +105,26 @@ int main(void)
         struct stat saved;
         check(stat(app.fileSystemRepresentation, &saved) == 0 && saved.st_ino == before.st_ino, @"database written in place (same inode)");
         check(unit.length && [fm fileExistsAtPath:unit], @"previous database kept in Backups");
+        check([[fm contentsOfDirectoryAtPath:wq_test_backup_root error:nil] isEqualToArray:@[unit.lastPathComponent]],
+              @"one Backups unit for the save (no stray main-only units)");
+        // Restore the returned unit somewhere disposable: every row that was
+        // committed before the save, including the WAL-only one, is there.
+        NSString *backedMain = [unit stringByAppendingString:app];
+        check([fm fileExistsAtPath:backedMain], @"unit holds the database under its original path");
+        check([fm fileExistsAtPath:[backedMain stringByAppendingString:@"-wal"]] &&
+              sizeOf([backedMain stringByAppendingString:@"-wal"]) == 0, @"unit holds an empty -wal beside it");
+        NSString *restored = [base stringByAppendingPathComponent:@"restored/app.sqlite"];
+        [fm createDirectoryAtPath:restored.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        check([fm copyItemAtPath:backedMain toPath:restored error:nil], @"restore the unit's main file alone");
+        check([restoredTexts(restored) isEqualToArray:@[@"one", @"two", @"three, only in the WAL"]],
+              @"restored backup has all pre-save rows, including the WAL-only one");
+        // Restoring the whole unit over a live database with newer WAL frames.
+        NSString *restored2 = [base stringByAppendingPathComponent:@"restored2/app.sqlite"];
+        [fm createDirectoryAtPath:restored2.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        check([fm copyItemAtPath:backedMain toPath:restored2 error:nil] &&
+              [fm copyItemAtPath:[backedMain stringByAppendingString:@"-wal"] toPath:[restored2 stringByAppendingString:@"-wal"] error:nil],
+              @"restore the whole unit");
+        check([restoredTexts(restored2) isEqualToArray:@[@"one", @"two", @"three, only in the WAL"]], @"whole-unit restore has all pre-save rows");
         check(after && ![after isEqualToDictionary:state], @"new state returned for the next save");
 
         // A second edit saves against the new state.

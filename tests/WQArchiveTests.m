@@ -1,3 +1,4 @@
+#include <sys/stat.h>
 // Host tests for WQArchive: round trips, compatibility with zip/unzip/ditto and
 // Python's zipfile (including ZIP64 records), and refusal of unsafe archives.
 #import <Foundation/Foundation.h>
@@ -57,6 +58,60 @@ static BOOL sameTree(NSString *a, NSString *b)
         }
     }
     return YES;
+}
+
+static void le16(NSMutableData *d, uint16_t v) { uint8_t b[2] = { (uint8_t)v, (uint8_t)(v >> 8) }; [d appendBytes:b length:2]; }
+static void le32(NSMutableData *d, uint32_t v) { le16(d, (uint16_t)v); le16(d, (uint16_t)(v >> 16)); }
+
+// A 22-byte end-of-central-directory record.
+static NSData *eocd(uint16_t count, uint32_t cdSize, uint32_t cdOffset, uint16_t commentLen)
+{
+    NSMutableData *d = [NSMutableData new];
+    le32(d, 0x06054b50); le16(d, 0); le16(d, 0); le16(d, count); le16(d, count);
+    le32(d, cdSize); le32(d, cdOffset); le16(d, commentLen);
+    return d;
+}
+
+// `zip` (no comment yet) with `comment` appended and its length set.
+static NSData *withComment(NSData *zip, NSData *comment)
+{
+    NSMutableData *d = [zip mutableCopy];
+    uint16_t n = (uint16_t)comment.length;
+    uint8_t b[2] = { (uint8_t)n, (uint8_t)(n >> 8) };
+    [d replaceBytesInRange:NSMakeRange(d.length - 2, 2) withBytes:b];
+    [d appendData:comment];
+    return d;
+}
+
+// A ZIP of `count` empty stored files named by `name(i)` (central directory
+// only points at local headers that exist).
+static NSData *manyEntries(NSUInteger count, NSString *(^name)(NSUInteger i))
+{
+    NSMutableData *local = [NSMutableData new], *cd = [NSMutableData new];
+    for (NSUInteger i = 0; i < count; i++) {
+        NSData *n = [name(i) dataUsingEncoding:NSUTF8StringEncoding];
+        uint32_t offset = (uint32_t)local.length;
+        le32(local, 0x04034b50); le16(local, 20); le16(local, 0); le16(local, 0); le16(local, 0); le16(local, 0x21);
+        le32(local, 0); le32(local, 0); le32(local, 0); le16(local, (uint16_t)n.length); le16(local, 0);
+        [local appendData:n];
+        le32(cd, 0x02014b50); le16(cd, 20); le16(cd, 20); le16(cd, 0); le16(cd, 0); le16(cd, 0); le16(cd, 0x21);
+        le32(cd, 0); le32(cd, 0); le32(cd, 0); le16(cd, (uint16_t)n.length); le16(cd, 0); le16(cd, 0);
+        le16(cd, 0); le16(cd, 0); le32(cd, 0); le32(cd, offset);
+        [cd appendData:n];
+    }
+    NSMutableData *zip = [local mutableCopy];
+    [zip appendData:cd];
+    if (count > 0xFFFF) {   // ZIP64 end record and locator
+        uint64_t recPos = zip.length;
+        le32(zip, 0x06064b50); le32(zip, 44); le32(zip, 0); le16(zip, 45); le16(zip, 45); le32(zip, 0); le32(zip, 0);
+        le32(zip, (uint32_t)count); le32(zip, 0); le32(zip, (uint32_t)count); le32(zip, 0);
+        le32(zip, (uint32_t)cd.length); le32(zip, 0); le32(zip, (uint32_t)local.length); le32(zip, 0);
+        le32(zip, 0x07064b50); le32(zip, 0); le32(zip, (uint32_t)recPos); le32(zip, (uint32_t)(recPos >> 32)); le32(zip, 1);
+        [zip appendData:eocd(0xFFFF, 0xFFFFFFFFu, 0xFFFFFFFFu, 0)];
+        return zip;
+    }
+    [zip appendData:eocd((uint16_t)count, (uint32_t)cd.length, (uint32_t)local.length, 0)];
+    return zip;
 }
 
 static NSString *python(NSString *script, NSString *cwd)
@@ -207,6 +262,141 @@ int main(void)
         NSString *cut = [work stringByAppendingPathComponent:@"cut.zip"];
         put(cut, [whole subdataWithRange:NSMakeRange(0, whole.length / 2)]);
         CHECK(!wq_zip_extract(cut, tmpdir(@"out8"), io, 1ull << 40, nil, nil, nil, nil, &err));
+
+        // Unreadable files and folders (like a container's root-only metadata
+        // plist): fail the archive by default, left out with skipUnreadable.
+        NSString *locked = [tmpdir(@"locked") stringByAppendingPathComponent:@"Container"];
+        NSString *secret = [locked stringByAppendingPathComponent:@".metadata.plist"];
+        NSString *closed = [locked stringByAppendingPathComponent:@"Closed"];
+        put([locked stringByAppendingPathComponent:@"Documents/save.dat"], [@"progress" dataUsingEncoding:NSUTF8StringEncoding]);
+        put(secret, [@"root only" dataUsingEncoding:NSUTF8StringEncoding]);
+        put([closed stringByAppendingPathComponent:@"inner.txt"], [@"x" dataUsingEncoding:NSUTF8StringEncoding]);
+        chmod(secret.fileSystemRepresentation, 0);
+        chmod(closed.fileSystemRepresentation, 0);
+        NSString *strict = [work stringByAppendingPathComponent:@"strict.zip"];
+        CHECK(!wq_zip_write(@[locked], strict, io, nil, nil, nil, &err), @"unreadable file must fail without skipUnreadable");
+        CHECK(![fm fileExistsAtPath:strict], @"failed ZIP removed");
+        WQArchiveIO *lenient = wq_archive_posix_io();
+        lenient.skipUnreadable = YES;
+        NSString *shareZip = [work stringByAppendingPathComponent:@"share.zip"];
+        CHECK(wq_zip_write(@[locked], shareZip, lenient, nil, nil, nil, &err), @"lenient zip: %@", err);
+        CHECK(lenient.unreadable == 2, @"unreadable %lu", (unsigned long)lenient.unreadable);
+        NSString *shareOut = tmpdir(@"shareout");
+        CHECK(wq_zip_extract(shareZip, shareOut, io, 1ull << 40, nil, nil, nil, nil, &err), @"extract: %@", err);
+        CHECK([[NSData dataWithContentsOfFile:[shareOut stringByAppendingPathComponent:@"Container/Documents/save.dat"]]
+               isEqual:[@"progress" dataUsingEncoding:NSUTF8StringEncoding]], @"readable file kept");
+        CHECK(![fm fileExistsAtPath:[shareOut stringByAppendingPathComponent:@"Container/.metadata.plist"]], @"unreadable file left out");
+        chmod(closed.fileSystemRepresentation, 0755);
+        chmod(secret.fileSystemRepresentation, 0644);
+
+        // CR-18: only a refusal (EACCES/EPERM) is skipped; any other listing
+        // failure fails even a lenient archive.
+        for (NSNumber *code in @[@(EACCES), @(EPERM), @(EIO), @(ENOENT), @0]) {
+            WQArchiveIO *failing = wq_archive_posix_io();
+            failing.skipUnreadable = YES;
+            NSArray *(^plain)(NSString *) = failing.list;
+            failing.list = ^NSArray<NSString *> *(NSString *dir) {
+                if ([dir.lastPathComponent isEqualToString:@"Documents"]) { errno = code.intValue; return nil; }
+                return plain(dir);
+            };
+            NSString *listZip = [work stringByAppendingPathComponent:[NSString stringWithFormat:@"list-%d.zip", code.intValue]];
+            BOOL refusal = code.intValue == EACCES || code.intValue == EPERM;
+            err = nil;
+            BOOL wrote = wq_zip_write(@[locked], listZip, failing, nil, nil, nil, &err);
+            CHECK(wrote == refusal, @"list errno %d: wrote %d (%@)", code.intValue, wrote, err);
+            CHECK(refusal ? failing.unreadable == 1 : ![fm fileExistsAtPath:listZip], @"list errno %d: unreadable %lu",
+                  code.intValue, (unsigned long)failing.unreadable);
+        }
+        // The POSIX list reports the real reason.
+        NSString *noDir = [work stringByAppendingPathComponent:@"no-such-dir"];
+        errno = 0;
+        CHECK(io.list(noDir) == nil && errno != EACCES && errno != EPERM && errno != 0, @"posix list errno %d", errno);
+        chmod(closed.fileSystemRepresentation, 0);
+        errno = 0;
+        CHECK(io.list(closed) == nil && (errno == EACCES || errno == EPERM), @"posix list refusal errno %d", errno);
+        chmod(closed.fileSystemRepresentation, 0755);
+
+        // CR-16: an EOCD-shaped record inside the comment must not win.
+        NSString *eo = tmpdir(@"eocd");
+        NSString *plainZip = [eo stringByAppendingPathComponent:@"plain.zip"];
+        CHECK(wq_zip_write(@[single], plainZip, io, nil, nil, nil, &err), @"plain zip: %@", err);
+        NSData *plainData = [NSData dataWithContentsOfFile:plainZip];
+        // Ordinary comment.
+        NSString *commented = [eo stringByAppendingPathComponent:@"commented.zip"];
+        put(commented, withComment(plainData, [@"just a comment" dataUsingEncoding:NSUTF8StringEncoding]));
+        NSString *outC = tmpdir(@"outC");
+        CHECK(wq_zip_extract(commented, outC, io, 1ull << 40, nil, nil, &files, nil, &err) && files == 1, @"comment: %@", err);
+        // Comment ending in an all-zero EOCD (the reproduced case): the real entry extracts.
+        NSMutableData *fakeComment = [[@"note: " dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+        [fakeComment appendData:eocd(0, 0, 0, 0)];
+        NSString *fake = [eo stringByAppendingPathComponent:@"fake.zip"];
+        put(fake, withComment(plainData, fakeComment));
+        NSString *outF = tmpdir(@"outF");
+        files = 0;
+        CHECK(wq_zip_extract(fake, outF, io, 1ull << 40, nil, nil, &files, nil, &err), @"fake eocd: %@", err);
+        CHECK(files == 1 && [[NSString stringWithContentsOfFile:[outF stringByAppendingPathComponent:@"single.txt"]
+                                                       encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"just one file"],
+              @"fake eocd hid the real entry (files %lu)", (unsigned long)files);
+        // A fake that is self-consistent (empty directory ending at itself): ambiguous, refused.
+        NSMutableData *selfComment = [[@"note: " dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+        uint32_t fakePos = (uint32_t)(plainData.length + selfComment.length);
+        [selfComment appendData:eocd(0, 0, fakePos, 0)];
+        NSString *ambiguous = [eo stringByAppendingPathComponent:@"ambiguous.zip"];
+        put(ambiguous, withComment(plainData, selfComment));
+        NSString *outA = tmpdir(@"outA");
+        err = nil;
+        CHECK(!wq_zip_extract(ambiguous, outA, io, 1ull << 40, nil, nil, nil, nil, &err) && [err containsString:@"ambiguous"],
+              @"ambiguous eocd: %@", err);
+        CHECK([fm contentsOfDirectoryAtPath:outA error:nil].count == 0, @"ambiguous zip wrote files");
+        // A comment that doesn't reach the end of the file is not an EOCD.
+        NSMutableData *trailing = [plainData mutableCopy];
+        [trailing appendData:[@"garbage" dataUsingEncoding:NSUTF8StringEncoding]];
+        NSString *trail = [eo stringByAppendingPathComponent:@"trailing.zip"];
+        put(trail, trailing);
+        CHECK(!wq_zip_extract(trail, tmpdir(@"outT"), io, 1ull << 40, nil, nil, nil, nil, &err), @"trailing garbage accepted");
+        // An empty archive is still fine.
+        NSString *empty = [eo stringByAppendingPathComponent:@"empty.zip"];
+        put(empty, eocd(0, 0, 0, 0));
+        files = 7;
+        CHECK(wq_zip_extract(empty, tmpdir(@"outE"), io, 1ull << 40, nil, nil, &files, nil, &err) && files == 0, @"empty zip: %@", err);
+
+        // CR-17: entry count and path limits, refused before anything is written.
+        NSString *many = [eo stringByAppendingPathComponent:@"many.zip"];
+        put(many, manyEntries(kWQZipMaxEntries + 1, ^NSString *(NSUInteger i) { return [NSString stringWithFormat:@"%lu", (unsigned long)i]; }));
+        NSString *outM = tmpdir(@"outM");
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+        err = nil;
+        CHECK(!wq_zip_extract(many, outM, io, 1ull << 40, nil, nil, nil, nil, &err) && [err containsString:@"too many"], @"many: %@", err);
+        CHECK([fm contentsOfDirectoryAtPath:outM error:nil].count == 0, @"too-many zip wrote files");
+        printf("over-limit entry count refused in %.3f s\n", CFAbsoluteTimeGetCurrent() - t0);
+        // A 16-bit count that doesn't cover the whole directory (no ZIP64) is damaged, not truncated.
+        NSMutableData *wrapped = [manyEntries(3, ^NSString *(NSUInteger i) { return [NSString stringWithFormat:@"w%lu", (unsigned long)i]; }) mutableCopy];
+        uint8_t two[2] = { 2, 0 };
+        [wrapped replaceBytesInRange:NSMakeRange(wrapped.length - 14, 2) withBytes:two];
+        [wrapped replaceBytesInRange:NSMakeRange(wrapped.length - 12, 2) withBytes:two];
+        NSString *wrappedZip = [eo stringByAppendingPathComponent:@"wrapped.zip"];
+        put(wrappedZip, wrapped);
+        CHECK(!wq_zip_extract(wrappedZip, tmpdir(@"outW"), io, 1ull << 40, nil, nil, nil, nil, &err), @"short count accepted");
+        NSString *atLimit = [eo stringByAppendingPathComponent:@"limit.zip"];
+        put(atLimit, manyEntries(2000, ^NSString *(NSUInteger i) { return [NSString stringWithFormat:@"d/%lu", (unsigned long)i]; }));
+        NSString *outL = tmpdir(@"outL");
+        CHECK(wq_zip_extract(atLimit, outL, io, 1ull << 40, nil, nil, &files, nil, &err) && files == 2000, @"2000 entries: %@", err);
+        NSMutableArray *parts = [NSMutableArray new];
+        for (int i = 0; i < kWQZipMaxPathDepth + 1; i++) [parts addObject:@"d"];
+        NSString *deepName = [parts componentsJoinedByString:@"/"];
+        NSString *deep = [eo stringByAppendingPathComponent:@"deep.zip"];
+        put(deep, manyEntries(1, ^NSString *(NSUInteger __unused i) { return deepName; }));
+        NSString *outD = tmpdir(@"outD");
+        CHECK(!wq_zip_extract(deep, outD, io, 1ull << 40, nil, nil, nil, nil, &err) && [err containsString:@"too deep"], @"deep: %@", err);
+        CHECK([fm contentsOfDirectoryAtPath:outD error:nil].count == 0, @"deep zip wrote files");
+        NSMutableArray *longParts = [NSMutableArray new];
+        for (int i = 0; i < 6; i++) [longParts addObject:[@"" stringByPaddingToLength:200 withString:@"x" startingAtIndex:0]];
+        NSString *longName = [longParts componentsJoinedByString:@"/"];
+        NSString *longZip = [eo stringByAppendingPathComponent:@"long.zip"];
+        put(longZip, manyEntries(1, ^NSString *(NSUInteger __unused i) { return longName; }));
+        NSString *outLong = tmpdir(@"outLong");
+        CHECK(!wq_zip_extract(longZip, outLong, io, 1ull << 40, nil, nil, nil, nil, &err) && [err containsString:@"too long"], @"long: %@", err);
+        CHECK([fm contentsOfDirectoryAtPath:outLong error:nil].count == 0, @"long zip wrote files");
     }
     if (failures) { printf("WQArchiveTests: %d failure(s)\n", failures); return 1; }
     printf("WQArchiveTests: all passed\n");

@@ -1,3 +1,4 @@
+#include <sys/stat.h>
 // Compile the real copy implementation against a temporary tree and verify the
 // same source-stability plus destination-shape checks used by app backups.
 #define WQ_ACCESS_TESTING 1
@@ -71,6 +72,28 @@ int main(void)
             Put([dst stringByAppendingPathComponent:@"file"], @"ORIGINAL BYTES");
             NSString *contentAfter = WQAppsSupportTreeContentSignature(dst, &exists, &error);
             WQCheck(contentAfter && ![contentAfter isEqualToString:contentBefore]);
+
+            // Sockets and FIFOs (shown as 0 KB files, issue #48) are left
+            // out instead of failing the whole backup.
+            NSString *specialSrc = [base stringByAppendingPathComponent:@"special-src"];
+            NSString *specialDst = [base stringByAppendingPathComponent:@"special-dst"];
+            WQCheck([fm createDirectoryAtPath:[specialSrc stringByAppendingPathComponent:@"tmp"]
+                  withIntermediateDirectories:YES attributes:nil error:nil]);
+            Put([specialSrc stringByAppendingPathComponent:@"tmp/empty.dat"], @"");
+            Put([specialSrc stringByAppendingPathComponent:@"data.txt"], @"keep me");
+            WQCheck(mkfifo([specialSrc stringByAppendingPathComponent:@"tmp/pipe"].fileSystemRepresentation, 0600) == 0);
+            WQCheck(mkfifo([specialSrc stringByAppendingPathComponent:@"toplevel-pipe"].fileSystemRepresentation, 0600) == 0);
+            WQCheck(wq_copy_contents(specialSrc, specialDst, &error));
+            WQCheck([[NSString stringWithContentsOfFile:[specialDst stringByAppendingPathComponent:@"data.txt"]
+                                               encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"keep me"]);
+            WQCheck([fm fileExistsAtPath:[specialDst stringByAppendingPathComponent:@"tmp/empty.dat"]]);
+            WQCheck(![fm fileExistsAtPath:[specialDst stringByAppendingPathComponent:@"tmp/pipe"]]);
+            WQCheck(![fm fileExistsAtPath:[specialDst stringByAppendingPathComponent:@"toplevel-pipe"]]);
+            // CR-07: the app-backup verification sees the same supported tree on both sides.
+            NSUInteger omitted = 0;
+            NSString *specialShape = WQAppsSupportTreeSignatureOmitting(specialSrc, NO, &exists, &omitted, &error);
+            NSString *copiedShape = WQAppsSupportTreeSignature(specialDst, NO, &exists, &error);
+            WQCheck(specialShape && [specialShape isEqualToString:copiedShape] && omitted == 2);
 
             // A copy failure must not leave a published destination.
             NSString *missing = [base stringByAppendingPathComponent:@"missing"];

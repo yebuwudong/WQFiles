@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import plistlib
 import stat
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ if [ "$1" = "--sdk" ] && [ "$3" = "--show-sdk-path" ]; then
     exit 0
 fi
 if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
+    if [ -n "${FAKE_CLANG_ARGS:-}" ]; then printf '%s\n' "$@" > "$FAKE_CLANG_ARGS"; fi
     output=
     previous=
     for argument in "$@"; do
@@ -119,6 +121,96 @@ class StagedBuildTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((project / "WQFiles.ipa").is_file())
             self.assertFalse((root / "WQFiles.ipa").exists())
+
+    def _project_copy(self, root: Path, runner: str | None, executable: bool = True) -> Path:
+        project = root / "project"
+        project.mkdir()
+        for name in ("build.sh", "Info.plist", "entitlements.plist"):
+            shutil.copy2(ROOT / name, project / name)
+        (project / "icons").mkdir()
+        (project / "icons" / "AppIcon60x60@2x.png").write_bytes(b"fixture icon")
+        (project / "tests").mkdir()
+        if runner is not None:
+            path = project / "tests" / "run_all_tests.sh"
+            path.write_text(runner, encoding="utf-8")
+            mode = path.stat().st_mode
+            path.chmod(mode | stat.S_IXUSR if executable else mode & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+        return project
+
+    def _run_preflight_case(self, runner, executable=True, skip=False):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        project = self._project_copy(root, runner, executable)
+        environment = self._fake_environment(root)
+        environment.pop("WQFILES_FINAL_IPA", None)
+        if skip:
+            environment["WQ_SKIP_PREFLIGHT"] = "1"
+        else:
+            environment.pop("WQ_SKIP_PREFLIGHT", None)
+        environment["PREFLIGHT_MARKER"] = str(root / "preflight-ran")
+        result = subprocess.run(
+            [str(project / "build.sh")], cwd=project, env=environment,
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        return result, project, root / "preflight-ran"
+
+    MARKER_RUNNER = '#!/usr/bin/env bash\ntouch "$PREFLIGHT_MARKER"\n'
+
+    def test_missing_preflight_runner_fails_closed(self):
+        result, project, marker = self._run_preflight_case(None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("preflight runner missing", result.stderr)
+        self.assertFalse((project / "WQFiles.ipa").exists())
+
+    def test_non_executable_preflight_runner_still_runs(self):
+        result, project, marker = self._run_preflight_case(self.MARKER_RUNNER, executable=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists(), "non-executable runner was skipped")
+        self.assertTrue((project / "WQFiles.ipa").is_file())
+
+    def test_executable_preflight_runner_runs(self):
+        result, project, marker = self._run_preflight_case(self.MARKER_RUNNER)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+        self.assertTrue((project / "WQFiles.ipa").is_file())
+
+    def test_failing_preflight_runner_blocks_build(self):
+        result, project, marker = self._run_preflight_case('#!/usr/bin/env bash\nexit 3\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("preflight failed", result.stderr)
+        self.assertFalse((project / "WQFiles.ipa").exists())
+
+    def test_explicit_skip_bypasses_preflight_with_warning(self):
+        for runner in (None, self.MARKER_RUNNER):
+            with self.subTest(runner=runner is not None):
+                result, project, marker = self._run_preflight_case(runner, skip=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(marker.exists())
+                self.assertIn("preflight SKIPPED", result.stderr)
+                self.assertTrue((project / "WQFiles.ipa").is_file())
+
+    def test_compiles_for_the_info_plist_minimum_os(self):
+        # Executable policy check: the deployment target build.sh actually
+        # passes to clang must equal the documented 26.0 and Info.plist.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            final = root / "out" / "WQFiles.ipa"
+            final.parent.mkdir()
+            environment = self._fake_environment(root)
+            environment["WQFILES_FINAL_IPA"] = str(final)
+            environment["FAKE_CLANG_ARGS"] = str(root / "clang-args")
+            result = subprocess.run(
+                [str(BUILD)], cwd=ROOT, env=environment,
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = (root / "clang-args").read_text(encoding="utf-8").splitlines()
+            with (ROOT / "Info.plist").open("rb") as plist_file:
+                minimum = plistlib.load(plist_file)["MinimumOSVersion"]
+            self.assertEqual(minimum, "26.0")
+            targets = [a for a in arguments if a.startswith("-miphoneos-version-min=")]
+            self.assertEqual(targets, ["-miphoneos-version-min=26.0"])
 
     def test_success_publishes_only_a_validated_zip(self):
         with tempfile.TemporaryDirectory() as directory:

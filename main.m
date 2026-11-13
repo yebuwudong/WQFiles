@@ -31,6 +31,7 @@
 #import "WQMediaStream.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <objc/runtime.h>
 #import <sys/mount.h>
 
 static BOOL wq_looks_like_uuid(NSString *name)
@@ -63,6 +64,8 @@ static BOOL wq_regular_file_for_ui(NSString *path)
 @property (nonatomic, strong) NSDate *modified;
 @property (nonatomic, strong) NSDate *created;
 @property (nonatomic) NSInteger childCount;   // folders, with Show Item Counts on; -1 unknown
+// Device, inode and type when listed: delete/rename/move act only on this object.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSNumber *> *identity;
 @end
 
 @implementation WQItem
@@ -528,56 +531,105 @@ static WQOpenMode wq_sniff(NSData *head)
 
 static NSUInteger wq_open_generation;
 
-// Audio and video by extension (the first bytes of MP4/MOV look like HEIC images).
+// Audio and video by extension; local HLS playlists open as text (see
+// WQMediaStream).
 static BOOL wq_is_media_name(NSString *name)
 {
-    static NSSet<NSString *> *exts;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        exts = [NSSet setWithArray:@[@"mp3", @"m4a", @"m4b", @"aac", @"wav", @"aif", @"aiff", @"caf", @"flac", @"alac",
-                                     @"mp4", @"m4v", @"mov", @"3gp", @"3g2", @"m3u8"]];
-    });
-    return [exts containsObject:name.pathExtension.lowercaseString];
+    return [WQMediaStream opensAsMediaByDefault:name];
 }
 
-// Copies the file to WQ Files' temporary folder (the previous copy is
-// removed) and calls back on the main queue with the local URL or an error.
-static void wq_media_copy(NSString *path, void (^done)(NSURL *_Nullable local, NSString *_Nullable error))
+// Fallback copies live in their own folder, tmp/wq-media/<UUID>/, owned by
+// one object. The player that plays the copy keeps the owner; when the player
+// goes away (or a late copy finds no player), the owner deletes exactly that
+// folder, so one player's copy never removes another's.
+@interface WQMediaCopyDir : NSObject
+@property (nonatomic, readonly, copy) NSString *path;
+@end
+
+@implementation WQMediaCopyDir
+
++ (NSString *)root
+{
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"wq-media"];
+}
+
+- (instancetype)init
+{
+    if ((self = [super init])) _path = [WQMediaCopyDir.root stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    return self;
+}
+
+- (void)dealloc
+{
+    NSString *path = _path;
+    dispatch_async(wq_io(), ^{ [NSFileManager.defaultManager removeItemAtPath:path error:nil]; });
+}
+
+@end
+
+static char kWQMediaCopyDirsKey;
+
+static void wq_media_keep_copy_dir(UIViewController *owner, WQMediaCopyDir *dir)
+{
+    NSMutableArray *dirs = objc_getAssociatedObject(owner, &kWQMediaCopyDirsKey);
+    if (!dirs) {
+        dirs = [NSMutableArray new];
+        objc_setAssociatedObject(owner, &kWQMediaCopyDirsKey, dirs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [dirs addObject:dir];
+}
+
+// At launch: every copy left in tmp/wq-media belongs to an earlier run. Runs
+// on the serial I/O queue ahead of any new copy.
+static void wq_media_sweep_stale(void)
 {
     dispatch_async(wq_io(), ^{
-        NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"wq-media"];
-        NSFileManager *fm = NSFileManager.defaultManager;
-        [fm removeItemAtPath:dir error:nil];
-        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-        NSString *local = [dir stringByAppendingPathComponent:path.lastPathComponent];
+        NSString *root = WQMediaCopyDir.root;
+        if ([NSFileManager.defaultManager removeItemAtPath:root error:nil]) wq_log(@"media: removed stale copies");
+    });
+}
+
+// Copies the file into a new folder of its own and calls back on the main
+// queue with the local URL (and the folder's owner) or an error.
+static void wq_media_copy(NSString *path, void (^done)(NSURL *_Nullable local, WQMediaCopyDir *_Nullable dir, NSString *_Nullable error))
+{
+    dispatch_async(wq_io(), ^{
+        WQMediaCopyDir *dir = [WQMediaCopyDir new];
         NSString *error = nil;
-        BOOL ok = wq_copy_to_local(path, local, &error);
+        NSString *local = [dir.path stringByAppendingPathComponent:path.lastPathComponent];
+        BOOL ok = [NSFileManager.defaultManager createDirectoryAtPath:dir.path withIntermediateDirectories:YES
+                                                           attributes:@{NSFilePosixPermissions: @0700} error:nil];
+        if (ok) ok = wq_copy_to_local(path, local, &error);
+        else error = WQLocalized(@"The file could not be read.");
         wq_log(@"media: copy %@ -> %@", path.lastPathComponent, ok ? @"OK" : error);
         dispatch_async(dispatch_get_main_queue(), ^{
-            done(ok ? [NSURL fileURLWithPath:local] : nil, ok ? nil : (error ?: WQLocalized(@"The file could not be read.")));
+            done(ok ? [NSURL fileURLWithPath:local] : nil, dir, ok ? nil : (error ?: WQLocalized(@"The file could not be read.")));
         });
     });
 }
 
 // Plays audio and video. It streams the file through WQ Files (the media
 // process can't read other apps' folders itself), so playback starts at once
-// and seeking reads only what's needed. Types that can't stream that way, and
-// files whose stream fails, are copied to the temporary folder and played
-// from there.
+// and seeking reads only what's needed. Every range comes from one descriptor
+// opened here; if the file changes underneath, the stream fails and the file
+// is copied once instead. Types that can't stream that way, and files whose
+// stream fails, are copied to a temporary folder of their own and played from
+// there.
 static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^stillWanted)(void))
 {
     UIViewController *host = nav.topViewController;
     dispatch_async(wq_io(), ^{
-        struct stat st;
-        BOOL regular = wq_stat(path, &st) && S_ISREG(st.st_mode);
-        unsigned long long size = regular ? (unsigned long long)st.st_size : 0;
+        WQMediaFileReader *reader = [[WQMediaFileReader alloc] initWithDescriptor:wq_open_for_reading(path)];
+        BOOL regular = reader != nil;
+        unsigned long long size = reader.size;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!stillWanted()) return;
             [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
             AVPlayerViewController *player = [AVPlayerViewController new];
             player.title = path.lastPathComponent;
             __weak AVPlayerViewController *weakPlayer = player;
-            // Fallback: copy, then swap the copy into the same player.
+            // Fallback: copy, then swap the copy into the same player. The
+            // player owns the copy's folder from then on.
             void (^playCopy)(NSString *) = ^(NSString *why) {
                 wq_log(@"media: %@: %@; copying it first", path.lastPathComponent, why);
                 AVPlayerViewController *p = weakPlayer;
@@ -585,14 +637,17 @@ static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^st
                 UIAlertController *hud = wq_alert_controller(@"Preparing…", path.lastPathComponent, UIAlertControllerStyleAlert);
                 UIViewController *presenter = p.viewIfLoaded.window ? p : host;
                 [presenter presentViewController:hud animated:YES completion:nil];
-                wq_media_copy(path, ^(NSURL *local, NSString *error) {
+                wq_media_copy(path, ^(NSURL *local, WQMediaCopyDir *dir, NSString *error) {
                     void (^finish)(void) = ^{
                         AVPlayerViewController *q = weakPlayer;
                         if (!local) {
                             wq_alert(q.viewIfLoaded.window ? q : host, @"Cannot play", error);
                             return;
                         }
+                        // No player any more: dir is released with this
+                        // block and removes the copy.
                         if (!q) return;
+                        wq_media_keep_copy_dir(q, dir);
                         [q.player replaceCurrentItemWithPlayerItem:[AVPlayerItem playerItemWithURL:local]];
                         [q.player play];
                     };
@@ -604,7 +659,7 @@ static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^st
             if (regular) {
                 item = [WQMediaStream playerItemForName:path.lastPathComponent size:size
                     read:^NSData *(unsigned long long offset, NSUInteger length, NSString **error) {
-                        return wq_read_range(path, offset, length, error);
+                        return [reader readOffset:offset length:length error:error];
                     } onFailure:^(NSString *reason) {
                         if (weakPlayer) playCopy([@"streaming failed: " stringByAppendingString:reason]);
                     }];
@@ -692,6 +747,16 @@ static NSString *wq_folder_date_text(NSDate *date)
 // One sort order for all folders, remembered. Each key starts in its natural
 // direction (A–Z, newest first, largest first); picking it again reverses it.
 typedef NS_ENUM(NSInteger, WQSortKey) { WQSortName, WQSortModified, WQSortCreated, WQSortSize };
+// Container lists (App Data, App Groups…): 0 all, 1 Apple, 2 other, 3 backed up.
+static NSString *const kWQContainerFilterPref = @"WQContainerFilter";
+
+static BOOL wq_id_is_apple(NSString *identifier)
+{
+    for (NSString *prefix in @[@"com.apple.", @"group.com.apple.", @"systemgroup.com.apple."])
+        if ([identifier hasPrefix:prefix]) return YES;
+    return NO;
+}
+
 static NSString *const kWQSortKeyPref = @"WQFolderSortKey";
 static NSString *const kWQSortAscendingPref = @"WQFolderSortAscending";
 static NSString *const kWQFoldersFirstPref = @"WQFolderSortFoldersFirst";
@@ -761,14 +826,23 @@ static NSString *wq_index_letter(NSString *name)
     return (c >= 'A' && c <= 'Z') ? [NSString stringWithCharacters:&c length:1] : @"#";
 }
 
-// Items picked with Move, waiting for "Move Here" in another folder.
+// Items picked with Move, waiting for "Move Here" in another folder, with the
+// identity (device, inode, type) each had when picked, or NSNull if unknown.
 static NSArray<NSString *> *gWQMovePaths;
+static NSArray *gWQMoveIdentities;
 static NSString *const kWQMoveChanged = @"WQMoveChanged";
 
-static void wq_set_move_paths(NSArray<NSString *> *paths)
+static void wq_set_move_paths(NSArray<NSString *> *paths, NSArray *identities)
 {
     gWQMovePaths = paths.count ? [paths copy] : nil;
+    gWQMoveIdentities = paths.count && identities.count == paths.count ? [identities copy] : nil;
     [NSNotificationCenter.defaultCenter postNotificationName:kWQMoveChanged object:nil];
+}
+
+static NSDictionary<NSString *, NSNumber *> *wq_identity_at(NSArray *identities, NSUInteger index)
+{
+    id identity = index < identities.count ? identities[index] : nil;
+    return [identity isKindOfClass:NSDictionary.class] ? identity : nil;
 }
 
 // ZIP reading and writing through WQAccess, so other apps' files work too.
@@ -893,7 +967,25 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         UIMenu *sort = [UIMenu menuWithTitle:WQLocalizedNullable(@"Sort By") image:[UIImage systemImageNamed:@"arrow.up.arrow.down"] identifier:nil options:0
                                     children:[sortActions arrayByAddingObject:order]];
         sort.subtitle = WQLocalizedFormat(@"%@, %@", WQLocalizedNullable(titles[(NSUInteger)current]), wq_sort_direction_text(current, ascending));
-        completion(@[sort]);
+        WQDirViewController *strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf->_labels) { completion(@[sort]); return; }
+        // Container lists filter like Apps (issue #44).
+        NSInteger shown = strongSelf.containerFilter;
+        NSArray *filterTitles = @[@"All", @"Apple", @"Other", @"Backed Up"];
+        NSMutableArray *filters = [NSMutableArray new];
+        for (NSInteger i = 0; i < (NSInteger)filterTitles.count; i++) {
+            if (i == 3 && !strongSelf.offersBackedUpFilter) continue;
+            UIAction *f = [UIAction actionWithTitle:WQLocalizedNullable(filterTitles[(NSUInteger)i]) image:nil identifier:nil handler:^(UIAction *__unused a) {
+                [NSUserDefaults.standardUserDefaults setInteger:i forKey:kWQContainerFilterPref];
+                [weakSelf resortAfterChange];
+            }];
+            f.state = i == shown ? UIMenuElementStateOn : UIMenuElementStateOff;
+            [filters addObject:f];
+        }
+        UIMenu *show = [UIMenu menuWithTitle:WQLocalizedNullable(@"Show") image:[UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"]
+                                  identifier:nil options:0 children:filters];
+        show.subtitle = WQLocalizedNullable(filterTitles[(NSUInteger)shown]);
+        completion(@[sort, show]);
     }]];
     _menuItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                                                  menu:[UIMenu menuWithChildren:menuItems]];
@@ -976,7 +1068,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     // Zero-width spaces after each slash let lines break between components.
     NSString *breakable = [_path stringByReplacingOccurrencesOfString:@"/" withString:@"/\u200B"];
     _pathLabel.text = _scanStatus ? [NSString stringWithFormat:@"%@\n%@", breakable, _scanStatus] : breakable;
-    CGFloat side = 16, top = 42;
+    CGFloat side = 16, top = kWQDeviceStripHeight + 8;
     CGSize fit = [_pathLabel sizeThatFits:CGSizeMake(width - 2 * side, CGFLOAT_MAX)];
     CGFloat height = top + ceil(fit.height) + 10;
     CGFloat oldHeight = _headerBox.frame.size.height;
@@ -1011,9 +1103,39 @@ static NSString *wq_temp_work_dir(NSString *prefix)
 }
 
 // App name, bundle or group ID, or file name; case and accents ignored.
+- (BOOL)offersBackedUpFilter { return [_path.lastPathComponent isEqualToString:@"Application"]; }
+
+- (NSInteger)containerFilter
+{
+    if (!_labels) return 0;
+    NSInteger filter = [NSUserDefaults.standardUserDefaults integerForKey:kWQContainerFilterPref];
+    if (filter < 0 || filter > 3 || (filter == 3 && !self.offersBackedUpFilter)) return 0;
+    return filter;
+}
+
 - (void)applyFilter
 {
     NSArray<WQItem *> *shown = _all ?: @[];
+    NSInteger filter = self.containerFilter;
+    if (filter) {
+        NSSet *backedUp = nil;
+        if (filter == 3) {
+            NSMutableSet *ids = [NSMutableSet new];
+            NSString *root = wq_app_backup_root();
+            for (NSString *bid in [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil]) {
+                if ([bid hasPrefix:@"."]) continue;
+                NSArray *units = [NSFileManager.defaultManager contentsOfDirectoryAtPath:[root stringByAppendingPathComponent:bid] error:nil];
+                for (NSString *u in units) if (![u hasPrefix:@"."]) { [ids addObject:bid]; break; }
+            }
+            backedUp = ids;
+        }
+        shown = [shown filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQItem *item, NSDictionary *__unused b) {
+            NSString *identifier = item.bundleID ?: item.label ?: @"";
+            if (filter == 1) return wq_id_is_apple(identifier);
+            if (filter == 2) return !wq_id_is_apple(identifier);
+            return [backedUp containsObject:identifier];
+        }]];
+    }
     if (_query) {
         NSStringCompareOptions opts = NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch;
         NSString *q = _query;
@@ -1035,6 +1157,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     }
     _indexTitles = titles.count > 1 ? titles : nil;
     _indexRows = rows;
+    // A filled menu button shows that a Show filter hides some containers.
+    _menuItem.image = [UIImage systemImageNamed:filter ? @"ellipsis.circle.fill" : @"ellipsis.circle"];
 }
 
 - (NSArray<NSString *> *)sectionIndexTitlesForTableView:(UITableView *)tableView
@@ -1202,8 +1326,11 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         UIBarButtonItem *del = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Delete") style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(deleteSelectedFiles)];
         del.tintColor = UIColor.systemRedColor;
+        UIBarButtonItem *rename = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Rename") style:UIBarButtonItemStylePlain
+                                                                  target:self action:@selector(renameSelectedFile)];
         move.enabled = zip.enabled = del.enabled = any;
-        self.toolbarItems = wq_deleting_allowed() ? @[move, flex, zip, flex, del] : @[move, flex, zip];
+        rename.enabled = _selectedFiles.count == 1;   // issue #41
+        self.toolbarItems = wq_deleting_allowed() ? @[move, flex, rename, flex, zip, flex, del] : @[move, flex, rename, flex, zip];
     } else if (gWQMovePaths.count) {
         UIBarButtonItem *cancel = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Cancel") style:UIBarButtonItemStylePlain
                                                                   target:self action:@selector(cancelMove)];
@@ -1283,45 +1410,59 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     return _selectedFiles.array.copy;
 }
 
+// The identity each path had when it was listed (NSNull when unknown), so a
+// later delete or move acts only on the selected objects.
+- (NSArray *)identitiesForPaths:(NSArray<NSString *> *)paths
+{
+    NSMutableDictionary<NSString *, NSDictionary *> *listed = [NSMutableDictionary new];
+    for (WQItem *item in _all) if (item.identity) listed[item.path] = item.identity;
+    NSMutableArray *identities = [NSMutableArray new];
+    for (NSString *path in paths) [identities addObject:listed[path] ?: wq_item_identity(path) ?: (id)NSNull.null];
+    return identities;
+}
+
 - (void)moveSelectedFiles
 {
     NSArray<NSString *> *paths = [self selectedFilePaths];
     if (!paths.count) return;
+    NSArray *identities = [self identitiesForPaths:paths];
     [self exitFileSelection];
-    [self startMove:paths];
+    [self startMove:paths identities:identities];
 }
 
-- (void)startMove:(NSArray<NSString *> *)paths
+- (void)startMove:(NSArray<NSString *> *)paths identities:(NSArray *)identities
 {
-    wq_set_move_paths(paths);
+    wq_set_move_paths(paths, identities);
     wq_alert(self, paths.count == 1 ? WQLocalized(@"Move") : WQLocalizedFormat(@"Move %lu items", (unsigned long)paths.count),
              @"Open the folder you want to move to, then tap Move Here at the bottom. Any app's folder works.");
 }
 
 - (void)cancelMove
 {
-    wq_set_move_paths(nil);
+    wq_set_move_paths(nil, nil);
 }
 
 - (void)moveHere
 {
     NSArray<NSString *> *paths = gWQMovePaths;
+    NSArray *identities = gWQMoveIdentities;
     if (![self canMoveHere]) return;
     NSString *dest = _path;
-    wq_set_move_paths(nil);
+    wq_set_move_paths(nil, nil);
     [self runIO:^BOOL(NSString **error) {
         NSUInteger failed = 0;
         NSString *first = nil;
-        for (NSString *path in paths) {
+        for (NSUInteger i = 0; i < paths.count; i++) {
+            NSString *path = paths[i];
             NSString *e = nil;
-            if (!wq_move(path, dest, &e)) {
+            if (!wq_move_expecting(path, dest, wq_identity_at(identities, i), &e)) {
                 failed++;
                 if (!first) first = [NSString stringWithFormat:@"%@: %@", path.lastPathComponent, e ?: @"failed"];
             }
         }
         if (failed && error) {
             *error = paths.count == 1 ? first
-                : [NSString stringWithFormat:@"%lu of %lu items weren't moved.\n\n%@", (unsigned long)failed, (unsigned long)paths.count, first];
+                : WQLocalizedFormat(@"Items not moved: %lu of %lu.\n\n%@", (unsigned long)failed, (unsigned long)paths.count, first);
         }
         return failed == 0;
     } failure:WQLocalizedNullable(@"Cannot move")];
@@ -1332,25 +1473,38 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     if (wq_refuse_if_deleting_off(self)) return;
     NSArray<NSString *> *paths = [self selectedFilePaths];
     if (!paths.count) return;
+    NSArray *identities = [self identitiesForPaths:paths];
+    BOOL folders = NO, special = NO;
+    for (NSString *path in paths) {
+        struct stat st;
+        BOOL known = lstat(path.fileSystemRepresentation, &st) == 0 || wq_stat(path, &st);
+        if (known && S_ISDIR(st.st_mode)) folders = YES;
+        else if (known && !S_ISREG(st.st_mode)) special = YES;
+    }
+    if (folders) { [self exitFileSelection]; [self confirmDeleteFolders:paths identities:identities]; return; }
     NSString *title = paths.count == 1 ? WQLocalizedFormat(@"Delete “%@”?", paths.firstObject.lastPathComponent)
                                        : WQLocalizedFormat(@"Delete %lu items?", (unsigned long)paths.count);
-    UIAlertController *alert = wq_alert_controller(title, @"Files are copied to Backups first. Folders are deleted only when they are empty.", UIAlertControllerStyleAlert);
+    // Links and special files have no backup; say so instead of promising one.
+    UIAlertController *alert = wq_alert_controller(title, special
+        ? @"Files are copied to Backups first. Links and special files (pipes, sockets) are removed without a backup and can't be restored."
+        : @"Files are copied to Backups first.", UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [alert addAction:wq_alert_action(@"Delete", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         [self exitFileSelection];
         [self runIO:^BOOL(NSString **error) {
             NSUInteger failed = 0;
             NSString *first = nil;
-            for (NSString *path in paths) {
+            for (NSUInteger i = 0; i < paths.count; i++) {
+                NSString *path = paths[i];
                 NSString *e = nil;
-                if (!wq_delete(path, &e)) {
+                if (!wq_delete_expecting(path, wq_identity_at(identities, i), &e)) {
                     failed++;
                     if (!first) first = [NSString stringWithFormat:@"%@: %@", path.lastPathComponent, e ?: @"failed"];
                 }
             }
             if (failed && error) {
                 *error = paths.count == 1 ? first
-                    : [NSString stringWithFormat:@"%lu of %lu items weren't deleted.\n\n%@", (unsigned long)failed, (unsigned long)paths.count, first];
+                    : WQLocalizedFormat(@"Items not deleted: %lu of %lu.\n\n%@", (unsigned long)failed, (unsigned long)paths.count, first);
             }
             return failed == 0;
         } failure:WQLocalizedNullable(@"Cannot delete")];
@@ -1371,30 +1525,43 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     return [NSString stringWithFormat:@"%@ %@", base, NSUUID.UUID.UUIDString];
 }
 
-// Runs a long ZIP job with a progress alert that can cancel it.
+// Runs a long ZIP job with a progress alert that can cancel it. The job calls
+// `finishing` before its final step (publishing the result); a cancel that
+// arrives too late to stop it is reported as such, not as nothing done.
 - (void)runArchiveJob:(NSString *)title failure:(NSString *)failureTitle
-                 work:(BOOL (^)(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note))work
+                 work:(BOOL (^)(WQArchiveCancelled cancelled, WQArchiveProgress progress, void (^finishing)(void),
+                                NSString **error, NSString **note))work
 {
     WQScanCancellation *cancellation = [WQScanCancellation new];
     UIAlertController *hud = wq_alert_controller(title, @"Starting…", UIAlertControllerStyleAlert);
     [hud addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) { [cancellation cancel]; })];
     [self presentViewController:hud animated:YES completion:nil];
     __block CFAbsoluteTime lastUpdate = 0;
+    __block BOOL finishingShown = NO;   // main queue only
     WQArchiveProgress progress = ^(unsigned long long bytes) {
         CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
         if (now - lastUpdate < 0.25) return;
         lastUpdate = now;
         NSString *text = wq_size_text(bytes);
-        dispatch_async(dispatch_get_main_queue(), ^{ hud.message = text; });
+        dispatch_async(dispatch_get_main_queue(), ^{ if (!finishingShown) hud.message = text; });
+    };
+    void (^finishing)(void) = ^{
+        dispatch_async(dispatch_get_main_queue(), ^{ finishingShown = YES; hud.message = WQLocalized(@"Finishing…"); });
     };
     WQArchiveCancelled cancelled = ^BOOL { return cancellation.isCancelled; };
     dispatch_async(wq_io(), ^{
         NSString *error = nil, *note = nil;
-        BOOL ok = work(cancelled, progress, &error, &note);
+        BOOL ok = work(cancelled, progress, finishing, &error, &note);
         BOOL wasCancelled = cancellation.isCancelled;
+        // A clean cancel leaves nothing behind and needs no message; any other
+        // failure (including a cancel that couldn't clean up) is reported.
+        BOOL quietCancel = !ok && wasCancelled && (!error || [error isEqualToString:@"Cancelled"]);
         dispatch_async(dispatch_get_main_queue(), ^{
             void (^finish)(void) = ^{
-                if (!ok && !wasCancelled) wq_alert(self, failureTitle, error ?: @"Unknown error");
+                if (!ok && !quietCancel) wq_alert(self, failureTitle, error ?: @"Unknown error");
+                else if (ok && wasCancelled)
+                    wq_alert(self, title, note ? [NSString stringWithFormat:@"%@\n\n%@", WQLocalized(@"It had already finished when you cancelled, so the result was kept."), note]
+                                               : WQLocalized(@"It had already finished when you cancelled, so the result was kept."));
                 else if (ok && note) wq_alert(self, title, note);
                 [self reload];
             };
@@ -1418,14 +1585,16 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *zipName = [self unusedName:base extension:@"zip"];
     NSString *dest = [_path stringByAppendingPathComponent:zipName];
     [self runArchiveJob:WQLocalized(@"Compressing") failure:WQLocalizedNullable(@"Cannot compress")
-                   work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note) {
+                   work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, void (^finishing)(void),
+                              NSString **error, NSString **note) {
         NSString *work = wq_temp_work_dir(@"wq-zip");
         if (!work) { *error = @"Can't create a temporary folder"; return NO; }
         NSString *local = [work stringByAppendingPathComponent:zipName];
         NSUInteger skipped = 0;
         BOOL ok = wq_zip_write(paths, local, wq_app_archive_io(), cancelled, progress, &skipped, error);
         if (ok && cancelled()) ok = NO;
-        if (ok) ok = wq_create_file_from(dest, local, error);
+        // Writing the finished ZIP into place can't be interrupted halfway.
+        if (ok) { finishing(); ok = wq_create_file_from(dest, local, error); }
         [NSFileManager.defaultManager removeItemAtPath:work error:nil];
         wq_log(@"compress: %lu item(s) -> %@: %@", (unsigned long)paths.count, dest, ok ? @"OK" : *error);
         if (ok && skipped)
@@ -1444,7 +1613,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *folder = [self unusedName:base.length ? base : @"Archive" extension:nil];
     NSString *dest = [_path stringByAppendingPathComponent:folder];
     [self runArchiveJob:WQLocalized(@"Extracting") failure:WQLocalizedNullable(@"Cannot extract")
-                   work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, NSString **error, NSString **note) {
+                   work:^BOOL(WQArchiveCancelled cancelled, WQArchiveProgress progress, void (^finishing)(void),
+                              NSString **error, NSString **note) {
         NSString *work = wq_temp_work_dir(@"wq-unzip");
         if (!work) { *error = @"Can't create a temporary folder"; return NO; }
         NSString *local = [work stringByAppendingPathComponent:folder];
@@ -1458,11 +1628,10 @@ static NSString *wq_temp_work_dir(NSString *prefix)
         NSUInteger files = 0, skipped = 0;
         BOOL ok = wq_zip_extract(zipPath, local, wq_app_archive_io(), limit, cancelled, progress, &files, &skipped, error);
         if (ok && cancelled()) ok = NO;
-        if (ok) ok = wq_create_dir(dest, error);
-        if (ok && !wq_copy_contents(local, dest, error)) {
-            ok = NO;
-            *error = WQLocalizedFormat(@"%@\n\nSome files may already be in %@.", *error ?: WQLocalized(@"Copying failed."), folder);
-        }
+        // All or nothing: copied next to the destination, then published by
+        // one rename that never replaces an item that appeared meanwhile.
+        // Cancelling still works until that rename.
+        if (ok) { finishing(); ok = wq_copy_tree_new(local, dest, cancelled, error); }
         [NSFileManager.defaultManager removeItemAtPath:work error:nil];
         wq_log(@"extract: %@ -> %@: %@ (%lu files, %lu skipped)", zipPath, dest, ok ? @"OK" : *error,
                (unsigned long)files, (unsigned long)skipped);
@@ -1627,6 +1796,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
                 item.isLink = S_ISLNK(st.st_mode);
                 item.isDir = S_ISDIR(st.st_mode);
                 item.isRegular = S_ISREG(st.st_mode);
+                item.identity = wq_identity_for_stat(&st);
                 item.size = (unsigned long long)st.st_size;
                 item.mode = st.st_mode;
                 item.uid = st.st_uid;
@@ -2009,7 +2179,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
             [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Move…") image:[UIImage systemImageNamed:@"folder"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
-                if (latest) [weakSelf startMove:@[latest.path]];
+                if (latest) [weakSelf startMove:@[latest.path] identities:@[latest.identity ?: wq_item_identity(latest.path) ?: (id)NSNull.null]];
             }]];
         }
         if (!strongSelf.readOnly && !strongSelf->_backupStorage) {
@@ -2052,6 +2222,17 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)renameSelectedFile
+{
+    NSString *path = [self selectedFilePaths].firstObject;
+    if ([self selectedFilePaths].count != 1) return;
+    WQItem *item = nil;
+    for (WQItem *candidate in _all) if ([candidate.path isEqualToString:path]) { item = candidate; break; }
+    if (!item) return;
+    [self exitFileSelection];
+    [self promptRename:item];
+}
+
 - (void)promptRename:(WQItem *)item
 {
     UIAlertController *alert = wq_alert_controller(@"Rename", item.path, UIAlertControllerStyleAlert);
@@ -2059,7 +2240,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [alert addAction:wq_alert_action(@"Rename", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         NSString *name = alert.textFields.firstObject.text;
-        [self runIO:^BOOL(NSString **error) { return wq_rename(item.path, name, error); } failure:WQLocalizedNullable(@"Cannot rename")];
+        [self runIO:^BOOL(NSString **error) { return wq_rename_expecting(item.path, name, item.identity, error); } failure:WQLocalizedNullable(@"Cannot rename")];
     })];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -2079,6 +2260,91 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+// Folders and everything in them (and any files among `paths`): counted
+// first, so the alert says how much goes, which of it is backed up (regular
+// files) and which is not (links, pipes, sockets), and whether the count is
+// complete. `identities` are the selected objects (NSNull when unknown).
+- (void)confirmDeleteFolders:(NSArray<NSString *> *)paths identities:(NSArray *)identities
+{
+    if (wq_refuse_if_deleting_off(self)) return;
+    for (NSString *path in paths) {
+        if (wq_is_protected_folder(path)) {
+            wq_alert(self, @"Cannot delete", WQLocalizedFormat(@"%@\n\nThis folder holds an app's or the system's data and can't be deleted here.", path));
+            return;
+        }
+    }
+    dispatch_async(wq_io(), ^{
+        static const NSUInteger kLimit = 1000000;
+        WQTreeCount total = { 0, 0, 0, WQTreeCountExact };
+        for (NSString *path in paths) {
+            if (total.regular + total.other >= kLimit) { total.state = MAX(total.state, WQTreeCountLimited); break; }
+            WQTreeCount count = wq_tree_count(path, kLimit - total.regular - total.other);
+            total.regular += count.regular; total.other += count.other; total.bytes += count.bytes;
+            total.state = MAX(total.state, count.state);   // Unreadable outranks Limited
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *title = paths.count == 1 ? WQLocalizedFormat(@"Delete “%@”?", paths.firstObject.lastPathComponent)
+                                               : WQLocalizedFormat(@"Delete %lu items?", (unsigned long)paths.count);
+            NSMutableString *message = [WQLocalizedFormat(@"%lu files (%@) in total, including everything in the folders. Each file is copied to Backups first and can be restored from Recently Deleted.",
+                                                          (unsigned long)total.regular, wq_size_text(total.bytes)) mutableCopy];
+            if (total.other)
+                [message appendFormat:@"\n\n%@", WQLocalizedFormat(@"%lu links or special files (pipes, sockets) are removed without a backup and can't be restored.",
+                                                                    (unsigned long)total.other)];
+            if (total.state == WQTreeCountLimited)
+                [message appendFormat:@"\n\n%@", WQLocalizedFormat(@"Counting stopped at %lu items, so there may be more.", (unsigned long)kLimit)];
+            else if (total.state == WQTreeCountUnreadable)
+                [message appendFormat:@"\n\n%@", WQLocalized(@"Some folders or items could not be read, so these totals may be incomplete. Anything in them that is not a regular file is removed without a backup.")];
+            UIAlertController *alert = wq_alert_controller(title, nil, UIAlertControllerStyleAlert);
+            alert.message = message;
+            [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+            [alert addAction:wq_alert_action(@"Delete", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+                [self deleteTrees:paths identities:identities total:total.regular + total.other];
+            })];
+            [self presentViewController:alert animated:YES completion:nil];
+        });
+    });
+}
+
+- (void)deleteTrees:(NSArray<NSString *> *)paths identities:(NSArray *)identities total:(NSUInteger)total
+{
+    WQScanCancellation *cancellation = [WQScanCancellation new];
+    UIAlertController *hud = wq_alert_controller(@"Deleting…", @"Starting…", UIAlertControllerStyleAlert);
+    [hud addAction:wq_alert_action(@"Stop", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) { [cancellation cancel]; })];
+    [self presentViewController:hud animated:YES completion:nil];
+    dispatch_async(wq_io(), ^{
+        __block CFAbsoluteTime lastUpdate = 0;
+        __block NSUInteger done = 0;
+        NSString *error = nil;
+        BOOL ok = YES;
+        for (NSUInteger i = 0; i < paths.count; i++) {
+            NSString *path = paths[i];
+            NSUInteger before = done, deleted = 0;
+            NSString *e = nil;
+            ok = wq_delete_tree_expecting(path, wq_identity_at(identities, i), ^BOOL { return cancellation.isCancelled; }, ^(NSUInteger n) {
+                NSUInteger now = before + n;
+                CFAbsoluteTime t = CFAbsoluteTimeGetCurrent();
+                if (t - lastUpdate < 0.2) return;
+                lastUpdate = t;
+                NSString *text = WQLocalizedFormat(@"%lu of %lu files", (unsigned long)now, (unsigned long)total);
+                dispatch_async(dispatch_get_main_queue(), ^{ hud.message = text; });
+            }, &deleted, NULL, &e);
+            done += deleted;
+            if (!ok) { error = e; break; }
+        }
+        BOOL stopped = cancellation.isCancelled;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            void (^finish)(void) = ^{
+                if (!ok && !stopped)
+                    wq_alert(self, @"Not everything was deleted",
+                             WQLocalizedFormat(@"%lu files were deleted (copies are in Backups), then:\n%@", (unsigned long)done, error ?: @"unknown error"));
+                [self reload];
+            };
+            if (self.presentedViewController == hud) [self dismissViewControllerAnimated:YES completion:finish];
+            else finish();
+        });
+    });
+}
+
 - (void)confirmDelete:(WQItem *)item
 {
     if (wq_refuse_if_deleting_off(self)) return;
@@ -2086,7 +2352,12 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     if (item.isLink) {
         message = WQLocalizedFormat(@"%@\n\nRemoves the symbolic link only; its target is not changed.", item.path);
     } else if (item.isDir) {
-        message = WQLocalizedFormat(@"%@\n\nOnly empty folders can be deleted.", item.path);
+        if (wq_is_protected_folder(item.path)) {
+            message = WQLocalizedFormat(@"%@\n\nOnly empty folders can be deleted.", item.path);
+        } else {
+            [self confirmDeleteFolders:@[item.path] identities:@[item.identity ?: wq_item_identity(item.path) ?: (id)NSNull.null]];
+            return;
+        }
     } else if (item.isRegular) {
         message = WQLocalizedFormat(@"%@\n\nA copy is kept in Backups.", item.path);
     } else {
@@ -2095,7 +2366,7 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     UIAlertController *alert = wq_alert_controller(WQLocalizedFormat(@"Delete \"%@\"?", item.name), message, UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [alert addAction:wq_alert_action(@"Delete", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
-        [self runIO:^BOOL(NSString **error) { return wq_delete(item.path, error); } failure:WQLocalizedNullable(@"Cannot delete")];
+        [self runIO:^BOOL(NSString **error) { return wq_delete_expecting(item.path, item.identity, error); } failure:WQLocalizedNullable(@"Cannot delete")];
     })];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -2195,23 +2466,66 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
     if (_importingFolder) { [self importFolders:urls]; return; }
     // One file: the existing flow, which offers to replace a file of the same name.
     if (urls.count == 1) { [self importSingleFile:urls.firstObject.path]; return; }
-    // Several files: same-named ones get a free name ("Name 2.ext") instead of
-    // a question per file. The picker's local copies are removed afterwards.
+    // Several files: when some names are taken, one question for all of them
+    // (issue #49): Replace All (each replaced file is backed up first, as for
+    // a single file) or Keep Both ("Name 2.ext").
     NSString *dir = _path;
     NSArray<NSString *> *sources = [urls valueForKey:@"path"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger taken = 0;
+        for (NSString *source in sources) {
+            struct stat st;
+            if (wq_stat([dir stringByAppendingPathComponent:source.lastPathComponent], &st) && S_ISREG(st.st_mode)) taken++;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!taken) { [self importFiles:sources into:dir replacing:NO]; return; }
+            UIAlertController *ask = wq_alert_controller(@"Replace existing files?",
+                WQLocalizedFormat(@"%lu of the %lu files already exist here. Replace them (each is backed up first) or keep both?",
+                                  (unsigned long)taken, (unsigned long)sources.count), UIAlertControllerStyleAlert);
+            [ask addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) {
+                for (NSString *source in sources) [NSFileManager.defaultManager removeItemAtPath:source error:nil];
+            })];
+            [ask addAction:wq_alert_action(@"Keep Both", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+                [self importFiles:sources into:dir replacing:NO];
+            })];
+            [ask addAction:wq_alert_action(@"Replace All", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+                [self importFiles:sources into:dir replacing:YES];
+            })];
+            [self presentViewController:ask animated:YES completion:nil];
+        });
+    });
+}
+
+// The picker's local copies are removed afterwards. `replacing`: a regular
+// file of the same name is overwritten (backed up first); otherwise, and for
+// anything that isn't a regular file, the import gets a free name.
+- (void)importFiles:(NSArray<NSString *> *)sources into:(NSString *)dir replacing:(BOOL)replacing
+{
     [self runBusy:WQLocalized(@"Importing") failure:WQLocalizedNullable(@"Import failed") work:^BOOL(NSString **error, NSString **note) {
         NSMutableSet<NSString *> *claimed = [NSMutableSet new];
-        NSUInteger done = 0, renamed = 0;
+        NSUInteger done = 0, renamed = 0, replaced = 0;
         NSString *first = nil;
         for (NSString *source in sources) {
-            NSString *name = wq_free_name_in(dir, source.lastPathComponent, claimed);
             NSString *e = nil;
-            BOOL ok = name && wq_create_file_from([dir stringByAppendingPathComponent:name], source, &e);
+            NSString *existing = [dir stringByAppendingPathComponent:source.lastPathComponent];
+            struct stat st;
+            BOOL ok;
+            NSString *name = source.lastPathComponent;
+            if (replacing && ![claimed containsObject:name.lowercaseString] && wq_stat(existing, &st) && S_ISREG(st.st_mode)) {
+                ok = wq_write_from_file(existing, source, &e);
+                [claimed addObject:name.lowercaseString];
+                if (ok) replaced++;
+            } else {
+                name = wq_free_name_in(dir, source.lastPathComponent, claimed);
+                ok = name && wq_create_file_from([dir stringByAppendingPathComponent:name], source, &e);
+                if (ok && ![name isEqualToString:source.lastPathComponent]) renamed++;
+            }
             [NSFileManager.defaultManager removeItemAtPath:source error:nil];
-            if (ok) { done++; if (![name isEqualToString:source.lastPathComponent]) renamed++; }
+            if (ok) done++;
             else if (!first) first = [NSString stringWithFormat:@"%@: %@", source.lastPathComponent, e ?: @"no free name"];
         }
-        wq_log(@"import: %lu of %lu files into %@", (unsigned long)done, (unsigned long)sources.count, dir);
+        wq_log(@"import: %lu of %lu files into %@ (%lu replaced, %lu renamed)", (unsigned long)done, (unsigned long)sources.count,
+               dir, (unsigned long)replaced, (unsigned long)renamed);
         if (done < sources.count) {
             *error = [NSString stringWithFormat:@"%lu of %lu files were imported.\n\n%@",
                       (unsigned long)done, (unsigned long)sources.count, first];
@@ -2240,12 +2554,11 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
                 NSError *coordError = nil;
                 [[NSFileCoordinator new] coordinateReadingItemAtURL:url options:0 error:&coordError byAccessor:^(NSURL *readable) {
                     NSString *copyError = nil;
-                    ok = wq_create_dir(dest, &copyError) && wq_copy_contents(readable.path, dest, &copyError);
+                    // All or nothing, never replacing an item that appeared meanwhile.
+                    ok = wq_copy_tree_new(readable.path, dest, nil, &copyError);
                     e = copyError;
                 }];
                 if (coordError) e = e ?: coordError.localizedDescription;
-                if (!ok && e && wq_stat(dest, &(struct stat){0}))
-                    e = [NSString stringWithFormat:@"%@\n\nPart of it may already be in %@.", e, name];
             } else {
                 e = WQLocalized(@"No free name in this folder");
             }
@@ -2528,6 +2841,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 @implementation WQRecentlyDeletedViewController {
     NSArray<WQDeletedItem *> *_items;
+    NSString *_problem;   // Backups could not be read (completely)
     NSDictionary<NSString *, NSString *> *_places;   // original path -> "App · folder"
     BOOL _loading;
 }
@@ -2572,12 +2886,14 @@ static NSString *wq_deleted_place(NSString *original)
     _loading = YES;
     if (!_items) [self.tableView reloadData];
     dispatch_async(wq_io(), ^{
-        NSArray<WQDeletedItem *> *items = wq_recently_deleted();
+        NSString *problem = nil;
+        NSArray<WQDeletedItem *> *items = wq_recently_deleted_checked(&problem) ?: @[];
         NSMutableDictionary *places = [NSMutableDictionary new];
         for (WQDeletedItem *item in items) places[item.originalPath] = wq_deleted_place(item.originalPath);
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_loading = NO;
             self->_items = items;
+            self->_problem = problem;
             self->_places = places;
             [self.refreshControl endRefreshing];
             [self.tableView reloadData];
@@ -2589,7 +2905,7 @@ static NSString *wq_deleted_place(NSString *original)
 - (void)updateButtons
 {
     if (!_items.count || !wq_deleting_allowed()) { self.navigationItem.rightBarButtonItem = nil; return; }
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Delete All")
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Delete Backups…")
         style:UIBarButtonItemStylePlain target:self action:@selector(confirmDeleteAll)];
     self.navigationItem.rightBarButtonItem.tintColor = UIColor.systemRedColor;
 }
@@ -2601,7 +2917,8 @@ static NSString *wq_deleted_place(NSString *original)
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return WQLocalized(@"Files WQ Files deleted, from their copies in Backups. Restore puts a file back where it was (missing folders are created); Delete Permanently removes it from Backups. Long-press for all options.");
+    NSString *text = WQLocalized(@"Restore returns a file to its original location. Delete Backup removes the selected copy. Older copies may still be available.");
+    return _problem && _items.count ? [NSString stringWithFormat:@"%@\n\n%@", _problem, text] : text;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -2611,7 +2928,7 @@ static NSString *wq_deleted_place(NSString *original)
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
     cell.accessoryType = UITableViewCellAccessoryNone;
     if (!_items.count) {
-        c.text = _items ? WQLocalized(@"Nothing deleted") : WQLocalized(@"Looking through Backups…");
+        c.text = !_items ? WQLocalized(@"Looking through Backups…") : _problem ?: WQLocalized(@"Nothing deleted");
         c.textProperties.color = UIColor.secondaryLabelColor;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else {
@@ -2682,7 +2999,7 @@ static NSString *wq_deleted_place(NSString *original)
                            identifier:nil handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = item.originalPath; }],
             nil];
         if (wq_deleting_allowed()) {
-            UIAction *del = [UIAction actionWithTitle:WQLocalizedNullable(@"Delete Permanently") image:[UIImage systemImageNamed:@"trash"]
+            UIAction *del = [UIAction actionWithTitle:WQLocalizedNullable(@"Delete Backup…") image:[UIImage systemImageNamed:@"trash"]
                                            identifier:nil handler:^(UIAction *__unused a) { [weakSelf confirmDelete:@[item]]; }];
             del.attributes = UIMenuElementAttributesDestructive;
             [actions addObject:del];
@@ -2720,9 +3037,9 @@ static NSString *wq_deleted_place(NSString *original)
     NSUInteger files = 0;
     for (WQDeletedItem *item in items) if (![units containsObject:item.unitPath]) { [units addObject:item.unitPath]; files += item.unitFileCount; }
     NSString *message = items.count == 1 && files == 1
-        ? WQLocalizedFormat(@"%@ is removed from Backups and can't be restored anymore.", items.firstObject.originalPath.lastPathComponent)
-        : WQLocalizedFormat(@"%lu backed-up files are removed from Backups (including files deleted or overwritten at the same time) and can't be restored anymore.", (unsigned long)files);
-    UIAlertController *alert = wq_alert_controller(@"Delete Permanently?", message, UIAlertControllerStyleAlert);
+        ? WQLocalizedFormat(@"This removes the selected backup of %@. Older copies may still be available.", items.firstObject.originalPath.lastPathComponent)
+        : WQLocalizedFormat(@"This removes %lu backed-up files, including other files in the selected backups. Older copies may still be available.", (unsigned long)files);
+    UIAlertController *alert = wq_alert_controller(@"Delete backup?", message, UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [alert addAction:wq_alert_action(@"Delete", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
         NSArray *paths = units.array;
@@ -2764,9 +3081,51 @@ static NSString *wq_chosen_language(void)
 static NSString *wq_language_name(NSString *code)
 {
     if (!code.length) return WQLocalized(@"System Default");
-    NSString *name = [[NSLocale localeWithLocaleIdentifier:code] localizedStringForLanguageCode:code];
+    // A regional table (pt-BR) is named with its region: "Português (Brasil)".
+    NSLocale *own = [NSLocale localeWithLocaleIdentifier:code];
+    NSString *name = [code containsString:@"-"] && ![code isEqualToString:@"zh-Hans"]
+        ? [own localizedStringForLocaleIdentifier:code] : [own localizedStringForLanguageCode:code];
     if ([code isEqualToString:@"zh-Hans"]) name = @"简体中文";
     return name.length ? [[name substringToIndex:1].uppercaseString stringByAppendingString:[name substringFromIndex:1]] : code;
+}
+
+// A flag for each shipped language, drawn as an image so the names line up.
+// Languages are spoken in many countries; the flag is the usual pick for
+// language menus (English: UK, Arabic: Saudi Arabia, Portuguese: Brazil as
+// shipped). System Default gets a globe.
+static UIImage *wq_language_flag(NSString *code)
+{
+    if (!code.length) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightRegular];
+        return [UIImage systemImageNamed:@"globe" withConfiguration:cfg];
+    }
+    static NSDictionary<NSString *, NSString *> *regions;
+    static NSCache *images;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        regions = @{ @"en": @"GB", @"de": @"DE", @"it": @"IT", @"es": @"ES", @"pt-BR": @"BR", @"pl": @"PL",
+                     @"ru": @"RU", @"ko": @"KR", @"zh-Hans": @"CN", @"ar": @"SA", @"tr": @"TR" };
+        images = [NSCache new];
+    });
+    NSString *region = regions[code];
+    if (!region) region = [[NSLocale localeWithLocaleIdentifier:code] objectForKey:NSLocaleCountryCode];
+    if (region.length != 2) return nil;
+    UIImage *cached = [images objectForKey:region];
+    if (cached) return cached;
+    // Regional indicator symbols: A = U+1F1E6.
+    NSMutableString *flag = [NSMutableString new];
+    for (NSUInteger i = 0; i < 2; i++) {
+        UTF32Char scalar = 0x1F1E6 + ([region.uppercaseString characterAtIndex:i] - 'A');
+        UTF32Char be = NSSwapHostIntToBig(scalar);
+        [flag appendString:[[NSString alloc] initWithBytes:&be length:4 encoding:NSUTF32BigEndianStringEncoding]];
+    }
+    NSDictionary *attrs = @{ NSFontAttributeName: [UIFont systemFontOfSize:24] };
+    CGSize size = [flag sizeWithAttributes:attrs];
+    UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:size] imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
+        [flag drawAtPoint:CGPointZero withAttributes:attrs];
+    }];
+    [images setObject:image forKey:region];
+    return image;
 }
 
 // iOS only offers Settings → WQ Files → Language when the device has more
@@ -2823,10 +3182,15 @@ static NSString *wq_language_name(NSString *code)
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
     NSString *code = indexPath.section == 0 ? @"" : _codes[(NSUInteger)indexPath.row];
     c.text = wq_language_name(code);
+    c.image = wq_language_flag(code);
+    c.imageProperties.reservedLayoutSize = CGSizeMake(34, 0);
+    if (!code.length) c.imageProperties.tintColor = UIColor.secondaryLabelColor;
     // Like iOS: each language in its own name, and in the one shown now.
     NSString *shownLanguage = NSBundle.mainBundle.preferredLocalizations.firstObject ?: @"en";
     if (code.length) {
-        NSString *here = [[NSLocale localeWithLocaleIdentifier:shownLanguage] localizedStringForLanguageCode:code];
+        NSLocale *shown = [NSLocale localeWithLocaleIdentifier:shownLanguage];
+        NSString *here = [code containsString:@"-"] && ![code isEqualToString:@"zh-Hans"]
+            ? [shown localizedStringForLocaleIdentifier:code] : [shown localizedStringForLanguageCode:code];
         if (here.length && [here localizedCaseInsensitiveCompare:c.text] != NSOrderedSame) c.secondaryText = here;
     } else {
         NSString *device = [NSLocale preferredLanguages].firstObject;
@@ -2872,6 +3236,10 @@ static NSString *wq_language_name(NSString *code)
     WQAppsViewController *_apps;
     WQCacheCleanerViewController *_cacheCleaner;
     BOOL _checkingAccess;
+    // A failed startup check waits here until the start screen is in front
+    // with nothing presented over it.
+    NSArray<WQHealthCheck *> *_pendingHealthFailure;
+    BOOL _healthRetryScheduled;
 }
 
 - (void)didReceiveMemoryWarning
@@ -2933,11 +3301,14 @@ static NSString *wq_language_name(NSString *code)
 }
 
 // The startup check (WQHealth), once the start screen is on screen: it runs
-// in the background so nothing waits for it. A failure covers the app with
-// WQHealthViewController; warnings are shown once per build.
+// in the background so nothing waits for it, and browsing stays possible. A
+// failure covers the app with WQHealthViewController once the user is back
+// on the start screen with nothing open over it (never over an action, a
+// confirmation or a progress sheet); warnings are shown once per build.
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
+    [self presentPendingHealthFailure];
     static BOOL checked;
     if (checked) return;
     checked = YES;
@@ -2964,6 +3335,42 @@ static NSString *wq_language_name(NSString *code)
     WQHealthState worst = wq_health_worst(checks);
     if (worst == WQHealthWarning) { [self showHealthWarnings:checks]; return; }
     if (worst < WQHealthFailed) return;
+    _pendingHealthFailure = checks;
+    [self presentPendingHealthFailure];
+}
+
+// Idle: the start screen is the visible screen, the app is active and
+// nothing (alert, sheet, scan window) is presented.
+- (BOOL)healthFailureCanPresent
+{
+    UIViewController *host = self.navigationController ?: self;
+    if (!self.view.window || host.presentedViewController) return NO;
+    if (self.navigationController && self.navigationController.topViewController != self) return NO;
+    return UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+}
+
+- (void)presentPendingHealthFailure
+{
+    NSArray<WQHealthCheck *> *checks = _pendingHealthFailure;
+    if (!checks) return;
+    if (![self healthFailureCanPresent]) {
+        static BOOL logged;
+        if (!logged) {
+            logged = YES;
+            wq_log(@"health: check failed; the result is shown when the start screen is back in front");
+        }
+        if (_healthRetryScheduled) return;
+        _healthRetryScheduled = YES;
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->_healthRetryScheduled = NO;
+            [strongSelf presentPendingHealthFailure];
+        });
+        return;
+    }
+    _pendingHealthFailure = nil;
     WQHealthViewController *health = [[WQHealthViewController alloc] initWithChecks:checks];
     __weak typeof(self) weakSelf = self;
     health.onPassed = ^(NSArray<WQHealthCheck *> *passed) {
@@ -2974,10 +3381,7 @@ static NSString *wq_language_name(NSString *code)
     WQNavigationController *nav = [[WQNavigationController alloc] initWithRootViewController:health];
     nav.modalPresentationStyle = UIModalPresentationFullScreen;
     nav.modalInPresentation = YES;
-    // Over whatever is open by now.
-    UIViewController *host = self.navigationController ?: self;
-    while (host.presentedViewController) host = host.presentedViewController;
-    [host presentViewController:nav animated:YES completion:nil];
+    [(self.navigationController ?: self) presentViewController:nav animated:YES completion:nil];
 }
 
 // Each set of warnings once per build, so the same notice doesn't repeat on
@@ -3281,11 +3685,30 @@ static NSString *wq_language_name(NSString *code)
 }
 
 // The buttons under the checks: 0 Try Again, 1 Log, 3 Signing Help (when
-// the App Group is missing), 2 Continue Anyway.
+// the App Group is missing), 4 Reset Access Cache (when no folder opens),
+// 2 Continue Anyway.
 - (NSArray<NSNumber *> *)actions
 {
     BOOL noGroup = _checks.count && _checks[0].state == WQHealthFailed;
-    return noGroup ? @[@0, @1, @3, @2] : @[@0, @1, @2];
+    BOOL noAccess = NO;
+    for (WQHealthCheck *c in _checks)
+        if ([c.key isEqualToString:@"Sandbox access"] && c.state == WQHealthFailed) noAccess = YES;
+    if (noGroup) return @[@0, @1, @3, @2];
+    return noAccess ? @[@0, @4, @1, @2] : @[@0, @1, @2];
+}
+
+- (void)resetAccessCache
+{
+    UIAlertController *alert = wq_alert_controller(@"Reset Access Cache?",
+        @"Another app that shares WQ Files' App Group (for example one signed with the same tool) can leave its cache folder in a state that blocks sandbox access. This puts it back; nothing is deleted.",
+        UIAlertControllerStyleAlert);
+    [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"Reset", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        NSString *error = nil;
+        if (wq_reset_access_cache(&error)) { [self retry]; return; }
+        wq_alert(self, @"Reset failed", error ?: @"see Log");
+    })];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return _running ? 1 : 2; }
@@ -3333,7 +3756,7 @@ static NSString *wq_language_name(NSString *code)
         c.image = [UIImage systemImageNamed:symbols[(NSUInteger)check.state]];
         c.imageProperties.tintColor = colors[(NSUInteger)check.state];
     } else {
-        NSArray *titles = @[@"Try Again", @"Log", @"Continue Anyway", @"Signing Help"];
+        NSArray *titles = @[@"Try Again", @"Log", @"Continue Anyway", @"Signing Help", @"Reset Access Cache"];
         NSUInteger action = self.actions[(NSUInteger)indexPath.row].unsignedIntegerValue;
         c = [UIListContentConfiguration cellConfiguration];
         c.text = WQLocalized(titles[action]);
@@ -3358,6 +3781,9 @@ static NSString *wq_language_name(NSString *code)
         case 3:
             [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz/WQFiles#signing-the-app-group"]
                                              options:@{} completionHandler:nil];
+            break;
+        case 4:
+            [self resetAccessCache];
             break;
         default: {
             UIAlertController *alert = wq_alert_controller(@"Continue Anyway?",
@@ -3591,6 +4017,9 @@ int main(int argc, char *argv[])
         wq_set_container_label_resolver(wq_bundle_id_for_container);
         wq_set_container_list_provider(wq_ls_container_paths);
         wq_set_full_scan_ui(wq_confirm_full_scan, wq_full_scan_progress);
+        // Temporary media copies and share exports left by earlier runs.
+        wq_media_sweep_stale();
+        wq_share_sweep_stale_exports();
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(WQAppDelegate.class));
     }
 }

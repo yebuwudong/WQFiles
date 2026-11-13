@@ -159,6 +159,14 @@ static void TestTreeSignatures(void)
         NSString *destinationIdentity = WQAppsSupportTreeSignature(dst, YES, &exists, &error);
         WQCheck(destinationIdentity && ![before isEqualToString:destinationIdentity]);
 
+        // CR-07: unsupported special entries are left out of both variants and counted.
+        NSString *fifo = [src stringByAppendingPathComponent:@"nested/pipe"];
+        WQCheck(mkfifo(fifo.fileSystemRepresentation, 0600) == 0);
+        NSUInteger omitted = 0;
+        WQCheck([WQAppsSupportTreeSignatureOmitting(src, NO, &exists, &omitted, &error) isEqualToString:destinationShape] && omitted == 1);
+        WQCheck(WQAppsSupportTreeSignatureOmitting(src, YES, &exists, &omitted, &error).length > 0 && omitted == 1);
+        WQCheck(unlink(fifo.fileSystemRepresentation) == 0);
+
         // A source mutation after the signature was captured must be visible.
         WQCheck([[@"original plus more" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:file atomically:YES]);
         NSString *changed = WQAppsSupportTreeSignature(src, YES, &exists, &error);
@@ -204,6 +212,26 @@ static void TestImportRoot(void)
     WQCheck([WQAppsSupportImportRoot([base stringByAppendingPathComponent:@"deep"], &error) isEqualToString:deep]);
     WQCheck([WQAppsSupportImportDeclaredBundle(deep) isEqualToString:@"com.example.app"]);
     WQCheck(WQAppsSupportImportDeclaredBundle(direct) == nil);
+    // CR-06: every declaration counts; conflicts and invalid IDs are visible.
+    mk(@"both/Documents");
+    file(@"both/.wqbackup.plist", @{@"BundleID": @"com.example.a"});
+    file(@"both/.com.apple.mobile_container_manager.metadata.plist", @{@"MCMMetadataIdentifier": @"com.example.b"});
+    NSString *both = [base stringByAppendingPathComponent:@"both"];
+    NSString *invalid = nil;
+    WQCheck([WQAppsSupportImportDeclaredBundles(both, &invalid) isEqualToArray:(@[@"com.example.a", @"com.example.b"])] && !invalid);
+    mk(@"same/Documents");
+    file(@"same/.wqbackup.plist", @{@"BundleID": @"com.example.a"});
+    file(@"same/.com.apple.mobile_container_manager.metadata.plist", @{@"MCMMetadataIdentifier": @"com.example.a"});
+    WQCheck([WQAppsSupportImportDeclaredBundles([base stringByAppendingPathComponent:@"same"], &invalid) isEqualToArray:(@[@"com.example.a"])] && !invalid);
+    mk(@"bad/Documents");
+    file(@"bad/.wqbackup.plist", @{@"BundleID": @"../evil"});
+    file(@"bad/.com.apple.mobile_container_manager.metadata.plist", @{@"MCMMetadataIdentifier": @"com.example.b"});
+    NSArray *badIDs = WQAppsSupportImportDeclaredBundles([base stringByAppendingPathComponent:@"bad"], &invalid);
+    WQCheck([badIDs isEqualToArray:(@[@"com.example.b"])] && [invalid isEqualToString:@"../evil"]);
+    mk(@"nonstring/Documents");
+    file(@"nonstring/.wqbackup.plist", @{@"BundleID": @42});
+    WQCheck(WQAppsSupportImportDeclaredBundles([base stringByAppendingPathComponent:@"nonstring"], &invalid).count == 0 && [invalid isEqualToString:@"42"]);
+    WQCheck(WQAppsSupportImportDeclaredBundles(direct, &invalid).count == 0 && !invalid);
     // Two apps side by side: ambiguous.
     mk(@"two/A/Documents"); mk(@"two/B/Library");
     error = nil;

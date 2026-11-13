@@ -31,21 +31,31 @@ static WQPType wqp_type(id v)
     return WQPTypeUnknown;
 }
 
-static NSString *wqp_type_name(WQPType t)
+// The English key for a type. Localize it exactly once: pass the key to a
+// key-taking helper (wq_alert_action), or use wqp_type_name for embedding.
+// Localizing a translated name again collapses types: in Italian, Polish and
+// Portuguese "Date" translates to "Data", the key of the Data type.
+static NSString *wqp_type_key(WQPType t)
 {
     switch (t) {
-        case WQPTypeString: return WQLocalized(@"String");
-        case WQPTypeInteger: return WQLocalized(@"Number");
-        case WQPTypeReal: return WQLocalized(@"Real");
-        case WQPTypeBoolean: return WQLocalized(@"Boolean");
-        case WQPTypeDate: return WQLocalized(@"Date");
-        case WQPTypeData: return WQLocalized(@"Data");
-        case WQPTypeDictionary: return WQLocalized(@"Dictionary");
-        case WQPTypeArray: return WQLocalized(@"Array");
-        case WQPTypeUID: return WQLocalized(@"Reference");
-        case WQPTypeUnknown: return @"?";
+        case WQPTypeString: return @"String";
+        case WQPTypeInteger: return @"Number";
+        case WQPTypeReal: return @"Real";
+        case WQPTypeBoolean: return @"Boolean";
+        case WQPTypeDate: return @"Date";
+        case WQPTypeData: return @"Data";
+        case WQPTypeDictionary: return @"Dictionary";
+        case WQPTypeArray: return @"Array";
+        case WQPTypeUID: return @"Reference";
+        case WQPTypeUnknown: return WQVerbatim(@"?");
     }
-    return @"?";
+    return WQVerbatim(@"?");
+}
+
+// Localized, final text (marked verbatim so no helper looks it up again).
+static NSString *wqp_type_name(WQPType t)
+{
+    return WQVerbatim(WQLocalized(wqp_type_key(t)));
 }
 
 static NSString *wqp_hex(NSData *data, NSUInteger max)
@@ -58,21 +68,13 @@ static NSString *wqp_hex(NSData *data, NSUInteger max)
     return s;
 }
 
-static NSISO8601DateFormatter *wqp_dates(void)
-{
-    static NSISO8601DateFormatter *f;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ f = [NSISO8601DateFormatter new]; });
-    return f;
-}
-
 static NSString *wqp_summary(id v)
 {
     switch (wqp_type(v)) {
-        case WQPTypeString: return WQLocalized(WQPBoundedStringPreview(v));
+        case WQPTypeString: return [v length] ? WQPBoundedStringPreview(v) : WQLocalized(@"(empty)");
         case WQPTypeInteger: case WQPTypeReal: return [v stringValue];
         case WQPTypeBoolean: return [v boolValue] ? WQLocalized(@"YES") : WQLocalized(@"NO");
-        case WQPTypeDate: return [wqp_dates() stringFromDate:v];
+        case WQPTypeDate: return WQPDateText(v);
         case WQPTypeData: return WQLocalizedFormat(@"%lu bytes · %@", (unsigned long)[v length], wqp_hex(v, 24));
         case WQPTypeDictionary: return WQLocalizedFormat(@"%lu keys", (unsigned long)[v count]);
         case WQPTypeArray: return WQLocalizedFormat(@"%lu items", (unsigned long)[v count]);
@@ -85,7 +87,7 @@ static NSString *wqp_summary(id v)
 static NSString *wqp_scalar_text(id value, WQPType t)
 {
     if (t == WQPTypeData) return wqp_hex(value, WQPMaxDataBytes);
-    if (t == WQPTypeDate) return [wqp_dates() stringFromDate:value];
+    if (t == WQPTypeDate) return WQPDateText(value);
     if ([value isKindOfClass:NSString.class]) return value;
     if ([value isKindOfClass:NSNumber.class]) return [value stringValue];
     return @"";
@@ -360,7 +362,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         return;
     }
     NSString *fmt = WQLocalized(WQPlistFormatName(doc.format));
-    UIAlertController *a = wq_alert_controller(@"Save changes?", WQLocalizedFormat(@"%@ is overwritten in place (%@ format). The current version is backed up first.", doc.path, fmt), UIAlertControllerStyleAlert);
+    UIAlertController *a = wq_alert_controller(@"Save changes?", WQVerbatim(WQLocalizedFormat(@"%@ is overwritten in place (%@ format). The current version is backed up first.", doc.path, fmt)), UIAlertControllerStyleAlert);
     [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [a addAction:wq_alert_action(@"Save", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused x) {
         NSUInteger savedRevision = [doc.edit beginSave];
@@ -422,7 +424,8 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
                 }
                 if (!ok && visible.viewIfLoaded.window) {
                     NSString *hint = wq_permission_hint(path, YES);
-                    wqp_alert(visible, @"Save failed", hint ?: writeError ?: @"Unknown error");
+                    NSString *reason = hint ?: writeError;
+                    wqp_alert(visible, @"Save failed", reason ? WQVerbatim(reason) : @"Unknown error");
                 }
             });
         });
@@ -534,7 +537,9 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     if (self.doc.edit.saving) return;
     id value = [self valueAt:indexPath.row];
     WQPType t = wqp_type(value);
-    NSString *name = self.isArray ? WQLocalizedFormat(@"Item %ld", (long)indexPath.row) : [self keyAt:indexPath.row];
+    // A raw plist key or an already rendered "Item n": shown as is, never
+    // looked up as a localization key.
+    NSString *name = WQVerbatim(self.isArray ? WQLocalizedFormat(@"Item %ld", (long)indexPath.row) : [self keyAt:indexPath.row]);
     if (t == WQPTypeDictionary || t == WQPTypeArray) {
         WQPlistEditorViewController *child = [[WQPlistEditorViewController alloc] initWithDocument:self.doc container:value title:name];
         [self.navigationController pushViewController:child animated:YES];
@@ -573,9 +578,10 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         case WQPTypeData: hint = WQLocalized(@"Hex bytes, e.g. 01 ab ff"); break;
         default: break;
     }
-    UIAlertController *a = wq_alert_controller(title, [wqp_type_name(t) stringByAppendingString:hint ? [@" · " stringByAppendingString:hint] : @""], UIAlertControllerStyleAlert);
+    UIAlertController *a = wq_alert_controller(title, WQVerbatim([wqp_type_name(t) stringByAppendingString:hint ? [@" · " stringByAppendingString:hint] : @""]), UIAlertControllerStyleAlert);
+    NSString *initialText = wqp_scalar_text(current, t);
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
-        f.text = wqp_scalar_text(current, t);
+        f.text = initialText;
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
         f.autocorrectionType = UITextAutocorrectionTypeNo;
         f.clearButtonMode = UITextFieldViewModeAlways;
@@ -594,21 +600,19 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
             wqp_alert(self, @"Value too large", @"Hex input is limited to 16 KB in this editor.");
             return;
         }
+        // Unchanged text keeps the original value exactly (sub-millisecond
+        // date precision, integer representation, data bytes).
+        if (current && [text isEqualToString:initialText]) { done(current); return; }
         switch (t) {
             case WQPTypeString: value = text; break;
-            case WQPTypeInteger: {
-                NSScanner *sc = [NSScanner scannerWithString:text];
-                long long n;
-                if ([sc scanLongLong:&n] && sc.isAtEnd) value = @(n);
-                break;
-            }
+            case WQPTypeInteger: value = WQPParseInteger(text); break;   // rejects overflow, keeps unsigned 64-bit
             case WQPTypeReal: {
                 NSScanner *sc = [NSScanner scannerWithString:text];
                 double d;
                 if ([sc scanDouble:&d] && sc.isAtEnd) value = @(d);
                 break;
             }
-            case WQPTypeDate: value = [wqp_dates() dateFromString:text]; break;
+            case WQPTypeDate: value = WQPParseDate(text); break;
             case WQPTypeData: {
                 NSData *data = WQParseHex(text, YES);
                 if (data.length > WQPMaxDataBytes) {
@@ -620,7 +624,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
             }
             default: break;
         }
-        if (!value) { wqp_alert(self, @"Not a valid value", WQLocalizedFormat(@"Expected: %@", hint ?: wqp_type_name(t))); return; }
+        if (!value) { wqp_alert(self, @"Not a valid value", WQVerbatim(WQLocalizedFormat(@"Expected: %@", hint ?: wqp_type_name(t)))); return; }
         done(value);
     })];
     [self presentViewController:a animated:YES completion:nil];
@@ -633,7 +637,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     if (self.doc.readOnly || self.doc.edit.saving) return;
     UIAlertController *sheet = wq_alert_controller(@"Add", @"Type of the new value", UIAlertControllerStyleActionSheet);
     for (WQPType t = WQPTypeString; t <= WQPTypeArray; t++) {
-        [sheet addAction:wq_alert_action(wqp_type_name(t), UIAlertActionStyleDefault, ^(UIAlertAction *__unused x) {
+        [sheet addAction:wq_alert_action(wqp_type_key(t), UIAlertActionStyleDefault, ^(UIAlertAction *__unused x) {
             [self addValueOfType:t];
         })];
     }
@@ -661,10 +665,10 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
             [self changed];
         };
         if (t == WQPTypeDictionary || t == WQPTypeArray || t == WQPTypeBoolean) { put(value); return; }
-        [self editValueOfType:t current:value title:key ?: @"New Item" done:put];
+        [self editValueOfType:t current:value title:key ? WQVerbatim(key) : @"New Item" done:put];
     };
     if (self.isArray) { insert(nil); return; }
-    [self askKey:nil title:WQLocalizedNullable(@"Key") done:insert];
+    [self askKey:nil title:@"Key" done:insert];
 }
 
 - (void)askKey:(NSString *)current title:(NSString *)title done:(void (^)(NSString *key))done
@@ -682,7 +686,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         NSString *key = a.textFields.firstObject.text ?: @"";
         if (key.length == 0) return;
         if (![key isEqualToString:current] && self.container[key]) {
-            wqp_alert(self, @"Key exists", WQLocalizedFormat(@"There is already a key named \"%@\".", key));
+            wqp_alert(self, @"Key exists", WQVerbatim(WQLocalizedFormat(@"There is already a key named \"%@\".", key)));
             return;
         }
         done(key);
@@ -708,7 +712,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         handler:^(UIContextualAction *__unused action, UIView *__unused view, void (^completion)(BOOL)) {
         if (self.doc.readOnly || self.doc.edit.saving) { completion(NO); return; }
         NSString *old = self.keys[(NSUInteger)row];
-        [self askKey:old title:WQLocalizedNullable(@"Rename Key") done:^(NSString *key) {
+        [self askKey:old title:@"Rename Key" done:^(NSString *key) {
             if (self.doc.readOnly || self.doc.edit.saving) return;
             if ([key isEqualToString:old]) return;
             id v = self.container[old];

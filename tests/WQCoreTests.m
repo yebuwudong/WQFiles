@@ -33,6 +33,42 @@ static void TestHexParsing(void)
     WQCheck(WQParseHex(@"", YES).length == 0);
 }
 
+static void TestExactHexParsing(void)
+{
+    const uint8_t expected[] = { 0xde, 0xad, 0xbe, 0xef };
+    NSData *four = [NSData dataWithBytes:expected length:sizeof(expected)];
+    WQCheck([WQParseHexExactly(@"de ad be ef", 4) isEqualToData:four]);
+    WQCheck([WQParseHexExactly(@" \tdeadbeef\n", 4) isEqualToData:four]);
+    WQCheck(WQParseHexExactly(@"de ad be", 4) == nil);       // too few
+    WQCheck(WQParseHexExactly(@"de ad be ef 00", 4) == nil); // count + 1 bytes
+    WQCheck(WQParseHexExactly(@"de ad be e", 4) == nil);     // odd digit count
+    WQCheck(WQParseHexExactly(@"<de ad be ef>", 4) == nil);  // no brackets in the hex editor
+    WQCheck(WQParseHexExactly(@"de ad be zz", 4) == nil);
+    WQCheck(WQParseHexExactly(@"", 0).length == 0 && WQParseHexExactly(@"", 0) != nil);
+    WQCheck(WQParseHexExactly(@"00", 0) == nil);
+
+    // At the textual bound the input is still parsed; one character more is
+    // rejected before scanning, even though it is otherwise valid.
+    NSUInteger limit = WQHexExactInputCharacterLimit(4);
+    NSString *atLimit = [@"deadbeef" stringByPaddingToLength:limit withString:@" " startingAtIndex:0];
+    WQCheck([WQParseHexExactly(atLimit, 4) isEqualToData:four]);
+    NSString *overLimit = [atLimit stringByAppendingString:@" "];
+    WQCheck(WQParseHexExactly(overLimit, 4) == nil);
+    WQCheck(WQHexExactInputCharacterLimit(NSUIntegerMax) == NSUIntegerMax);
+
+    // A huge valid paste for a 32-byte row is refused without being parsed.
+    NSMutableString *huge = [NSMutableString new];
+    for (NSUInteger i = 0; i < 4 * 1024 * 1024; i++) [huge appendString:@"ab"];
+    NSDate *start = NSDate.date;
+    WQCheck(WQParseHexExactly(huge, 32) == nil);
+    WQCheck([NSDate.date timeIntervalSinceDate:start] < 0.5);
+    // Within the textual bound, a valid count + 1 input stops at the extra byte.
+    NSMutableString *oneMore = [NSMutableString new];
+    for (NSUInteger i = 0; i < 33; i++) [oneMore appendString:@"ab "];
+    WQCheck(oneMore.length <= WQHexExactInputCharacterLimit(32));
+    WQCheck(WQParseHexExactly(oneMore, 32) == nil);
+}
+
 static void TestPatchRanges(void)
 {
     WQCheck(WQPatchRangeValid(0, 0, 0));
@@ -99,6 +135,7 @@ int main(void)
 {
     @autoreleasepool {
         TestHexParsing();
+        TestExactHexParsing();
         TestPatchRanges();
         TestEditRevisions();
         TestRestorePlanning();

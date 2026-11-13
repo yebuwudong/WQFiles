@@ -26,9 +26,16 @@ BOOL wq_keep_before_restore(void);
 void wq_set_keep_before_restore(BOOL keep);
 // YES (after telling the user) when deleting is turned off.
 BOOL wq_refuse_if_deleting_off(UIViewController *host);
+// title/message/action titles are localization keys. Pass already-localized
+// text and raw data (names, keys, error strings) as WQVerbatim(text) so it is
+// shown exactly and never looked up a second time.
 UIAlertController *wq_alert_controller(NSString *_Nullable title, NSString *_Nullable message, UIAlertControllerStyle style);
 UIAlertAction *wq_alert_action(NSString *title, UIAlertActionStyle style, void (^_Nullable handler)(UIAlertAction *));
 NSString *wq_size_text(unsigned long long size);
+// "WQ Files <version> (<build>)".
+NSString *wq_app_version_line(void);
+// Height of the strip wq_device_header draws (16 pt of space follow it).
+extern const CGFloat kWQDeviceStripHeight;
 UIView *wq_device_header(CGFloat width);
 // "iPhone 17 Pro Max (iPhone18,2) · iOS 27.0.1 (24A446)"
 NSString *wq_device_line(void);

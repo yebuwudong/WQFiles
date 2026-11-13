@@ -76,6 +76,53 @@ int main(void)
             check(wq_copy_contents(srcDir, dstDir, &error), @"tree copy preserves symlink item without following it");
             struct stat st;
             check(lstat([dstDir stringByAppendingPathComponent:@"link-child"].fileSystemRepresentation, &st) == 0 && S_ISLNK(st.st_mode), @"copied symlink remains a symlink");
+
+            // CR-05: wq_copy_tree_new never replaces and publishes all or nothing.
+            NSString *treeSrc = [base stringByAppendingPathComponent:@"tree-src"];
+            mkdirs([treeSrc stringByAppendingPathComponent:@"sub"]);
+            put([treeSrc stringByAppendingPathComponent:@"a"], @"A");
+            put([treeSrc stringByAppendingPathComponent:@"sub/b"], @"B");
+            NSString *(^stagesIn)(void) = ^NSString *{
+                for (NSString *n in [fm contentsOfDirectoryAtPath:base error:nil]) if ([n hasPrefix:@".wq-new-"]) return n;
+                return nil;
+            };
+            NSString *published = [base stringByAppendingPathComponent:@"published"];
+            check(wq_copy_tree_new(treeSrc, published, nil, &error) && has([published stringByAppendingPathComponent:@"sub/b"], @"B") &&
+                  has([published stringByAppendingPathComponent:@"a"], @"A") && !stagesIn(), @"tree copy publishes the complete folder");
+            // A competing child appearing in the staging folder before installation survives; the copy fails.
+            NSString *raced = [base stringByAppendingPathComponent:@"raced"];
+            __block NSString *competitor = nil;
+            wq_test_tree_hook = ^(NSString *stage, NSString *path) {
+                if ([stage isEqual:@"copyStaged"] && [path.lastPathComponent isEqual:@"a"] && !competitor) {
+                    competitor = path;
+                    put(path, @"competitor");
+                }
+            };
+            error = nil;
+            BOOL racedOk = wq_copy_tree_new(treeSrc, raced, nil, &error);
+            wq_test_tree_hook = nil;
+            check(!racedOk && competitor && ![fm fileExistsAtPath:raced], @"competing child fails the copy and nothing is published");
+            check(!stagesIn(), @"failed tree copy removes its private staging folder");
+            // A competitor at the final name is never replaced.
+            NSString *taken = [base stringByAppendingPathComponent:@"taken"];
+            wq_test_tree_hook = ^(NSString *stage, NSString *path) {
+                if ([stage isEqual:@"publishReady"]) { mkdirs(path); put([path stringByAppendingPathComponent:@"theirs"], @"theirs"); }
+            };
+            BOOL takenOk = wq_copy_tree_new(treeSrc, taken, nil, &error);
+            wq_test_tree_hook = nil;
+            check(!takenOk && has([taken stringByAppendingPathComponent:@"theirs"], @"theirs") &&
+                  ![fm fileExistsAtPath:[taken stringByAppendingPathComponent:@"a"]] && !stagesIn(),
+                  @"publication never replaces an item that appeared at the destination");
+            check(!wq_copy_tree_new(treeSrc, taken, nil, &error), @"existing destination refused up front");
+            // Cancellation before publication leaves nothing.
+            NSString *cancelledDest = [base stringByAppendingPathComponent:@"cancelled"];
+            __block NSUInteger polls = 0;
+            BOOL cancelOk = wq_copy_tree_new(treeSrc, cancelledDest, ^BOOL { return ++polls > 1; }, &error);
+            check(!cancelOk && [error isEqual:@"Cancelled"] && ![fm fileExistsAtPath:cancelledDest] && !stagesIn(),
+                  @"cancelled tree copy publishes nothing and cleans up");
+            BOOL lateCancel = wq_copy_tree_new(treeSrc, [base stringByAppendingPathComponent:@"late"], ^BOOL { return NO; }, &error);
+            check(lateCancel, @"uncancelled tree copy with a cancel check succeeds");
+            // wq_copy_contents keeps replacing for restore callers (checked above).
         } @finally {
             wq_test_tree_hook = nil;
             [fm removeItemAtPath:base error:nil];

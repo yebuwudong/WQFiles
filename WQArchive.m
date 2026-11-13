@@ -18,12 +18,25 @@ static const uint32_t kWQZipMax32 = 0xFFFFFFFFu;
 @implementation WQArchiveIO
 @end
 
+int wq_archive_errno(NSError *error)
+{
+    for (NSError *e = error; e; e = e.userInfo[NSUnderlyingErrorKey]) {
+        if ([e.domain isEqualToString:NSPOSIXErrorDomain] && e.code > 0) return (int)e.code;
+    }
+    if ([error.domain isEqualToString:NSCocoaErrorDomain] && error.code == NSFileReadNoPermissionError) return EACCES;
+    if ([error.domain isEqualToString:NSCocoaErrorDomain] && error.code == NSFileReadNoSuchFileError) return ENOENT;
+    return EIO;
+}
+
 WQArchiveIO *wq_archive_posix_io(void)
 {
     WQArchiveIO *io = [WQArchiveIO new];
     io.stat = ^BOOL(NSString *path, struct stat *st) { return lstat(path.fileSystemRepresentation, st) == 0; };
     io.list = ^NSArray<NSString *> *(NSString *dir) {
-        return [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil];
+        NSError *error = nil;
+        NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:&error];
+        if (!names) errno = wq_archive_errno(error);
+        return names;
     };
     io.openRead = ^int(NSString *path) {
         return open(path.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -160,6 +173,11 @@ static BOOL wq_zip_local_header(WQZipWriter *w, WQZipEntry *e)
 static BOOL wq_zip_add_file(WQZipWriter *w, NSString *path, NSString *name, const struct stat *st)
 {
     int in = w->io.openRead(path);
+    if (in < 0 && w->io.skipUnreadable && (errno == EACCES || errno == EPERM)) {
+        if ([w->io.expectedUnreadableNames containsObject:path.lastPathComponent]) w->io.expectedUnreadable++;
+        else w->io.unreadable++;
+        return YES;
+    }
     if (in < 0) return wq_zip_fail(w, WQLocalizedFormat(@"Can't read %@ (%s)", name, strerror(errno)));
     WQZipEntry *e = [WQZipEntry new];
     e.name = [name dataUsingEncoding:NSUTF8StringEncoding];
@@ -228,7 +246,14 @@ static BOOL wq_zip_add(WQZipWriter *w, NSString *path, NSString *name, NSUIntege
     uint16_t t, d; wq_dos_time(st.st_mtimespec.tv_sec, &t, &d); e.time = t; e.date = d;
     e.crc = 0;
     if (!wq_zip_local_header(w, e)) return NO;
+    errno = 0;
     NSArray<NSString *> *children = w->io.list(path);
+    int listError = errno;
+    // Only a refusal (permissions, sandbox) is skipped; any other failure
+    // would silently drop a subtree from what looks like a complete archive.
+    if (!children && w->io.skipUnreadable && (listError == EACCES || listError == EPERM)) {
+        w->io.unreadable++; return YES;   // kept as an empty folder
+    }
     if (!children) return wq_zip_fail(w, WQLocalizedFormat(@"Can't list %@", name));
     for (NSString *child in [children sortedArrayUsingSelector:@selector(localizedStandardCompare:)]) {
         if (!wq_zip_add(w, [path stringByAppendingPathComponent:child], [name stringByAppendingFormat:@"/%@", child], depth + 1))
@@ -334,35 +359,70 @@ static NSString *wq_zip_decode_name(const uint8_t *p, uint16_t len, uint16_t fla
     return s;
 }
 
+// Checks one end-of-central-directory candidate (the 22 bytes at eocdPos).
+// A real one has its comment running exactly to the end of the file, and its
+// central directory ending exactly where the end records begin, starting with
+// a directory record. EOCD-shaped bytes inside a comment rarely pass this.
+static BOOL wq_zip_eocd_candidate(int fd, uint64_t fileSize, const uint8_t *rec, uint64_t eocdPos,
+                                  uint64_t *countOut, uint64_t *cdSizeOut, uint64_t *cdOffsetOut)
+{
+    uint64_t disk = wq_rd16(rec + 4), cdDisk = wq_rd16(rec + 6), diskCount = wq_rd16(rec + 8);
+    uint64_t count = wq_rd16(rec + 10), cdSize = wq_rd32(rec + 12), cdOffset = wq_rd32(rec + 16);
+    if (eocdPos + 22 + wq_rd16(rec + 20) != fileSize) return NO;
+    uint64_t cdEnd = eocdPos;
+    if (eocdPos >= 20) {
+        uint8_t loc[20], rec64[56];
+        if (wq_pread_all(fd, loc, 20, (off_t)(eocdPos - 20)) && wq_rd32(loc) == 0x07064b50) {
+            uint64_t recPos = wq_rd64(loc + 8);
+            if (recPos > eocdPos - 20 || eocdPos - 20 - recPos < 56 ||
+                !wq_pread_all(fd, rec64, 56, (off_t)recPos) || wq_rd32(rec64) != 0x06064b50 ||
+                wq_rd64(rec64 + 4) != eocdPos - 20 - recPos - 12) return NO;
+            cdEnd = recPos;
+            if (disk == 0xFFFF) disk = wq_rd32(rec64 + 16);
+            if (cdDisk == 0xFFFF) cdDisk = wq_rd32(rec64 + 20);
+            if (diskCount == 0xFFFF) diskCount = wq_rd64(rec64 + 24);
+            if (count == 0xFFFF) count = wq_rd64(rec64 + 32);
+            if (cdSize == kWQZipMax32) cdSize = wq_rd64(rec64 + 40);
+            if (cdOffset == kWQZipMax32) cdOffset = wq_rd64(rec64 + 48);
+        }
+    }
+    if (disk != 0 || cdDisk != 0 || diskCount != count) return NO;   // multi-disk archives aren't supported
+    if (cdOffset > cdEnd || cdSize != cdEnd - cdOffset) return NO;
+    if (count == 0) { if (cdSize != 0) return NO; }
+    else {
+        uint8_t sig[4];
+        if (count > cdSize / 46 || !wq_pread_all(fd, sig, 4, (off_t)cdOffset) || wq_rd32(sig) != 0x02014b50) return NO;
+    }
+    *countOut = count; *cdSizeOut = cdSize; *cdOffsetOut = cdOffset;
+    return YES;
+}
+
 static BOOL wq_zip_read_directory(int fd, uint64_t fileSize, WQZipItem **itemsOut, NSUInteger *countOut, NSString **error)
 {
     size_t tailLen = (size_t)MIN(fileSize, (uint64_t)(22 + 65535));
     if (tailLen < 22) { *error = WQLocalized(@"Not a ZIP file"); return NO; }
     uint8_t *tail = malloc(tailLen);
     if (!tail || !wq_pread_all(fd, tail, tailLen, (off_t)(fileSize - tailLen))) { free(tail); *error = WQLocalized(@"Can't read the ZIP file"); return NO; }
-    ssize_t eocd = -1;
+    // Every signature in the tail is a candidate; exactly one may be consistent.
+    BOOL signature = NO;
+    NSUInteger valid = 0;
+    uint64_t count = 0, cdSize = 0, cdOffset = 0;
     for (ssize_t i = (ssize_t)tailLen - 22; i >= 0; i--) {
-        if (wq_rd32(tail + i) == 0x06054b50) { eocd = i; break; }
+        if (wq_rd32(tail + i) != 0x06054b50) continue;
+        signature = YES;
+        uint64_t c, s, o;
+        if (!wq_zip_eocd_candidate(fd, fileSize, tail + i, fileSize - tailLen + (uint64_t)i, &c, &s, &o)) continue;
+        if (++valid == 1) { count = c; cdSize = s; cdOffset = o; }
     }
-    if (eocd < 0) { free(tail); *error = WQLocalized(@"Not a ZIP file (no directory found)"); return NO; }
-    uint64_t eocdPos = fileSize - tailLen + (uint64_t)eocd;
-    uint64_t count = wq_rd16(tail + eocd + 10);
-    uint64_t cdSize = wq_rd32(tail + eocd + 12);
-    uint64_t cdOffset = wq_rd32(tail + eocd + 16);
     free(tail);
-    if ((count == 0xFFFF || cdSize == kWQZipMax32 || cdOffset == kWQZipMax32) && eocdPos >= 20) {
-        uint8_t loc[20], rec[56];
-        if (wq_pread_all(fd, loc, 20, (off_t)(eocdPos - 20)) && wq_rd32(loc) == 0x07064b50) {
-            uint64_t recPos = wq_rd64(loc + 8);
-            if (recPos + 56 <= fileSize && wq_pread_all(fd, rec, 56, (off_t)recPos) && wq_rd32(rec) == 0x06064b50) {
-                count = wq_rd64(rec + 32);
-                cdSize = wq_rd64(rec + 40);
-                cdOffset = wq_rd64(rec + 48);
-            }
-        }
-    }
-    if (cdOffset > fileSize || cdSize > fileSize - cdOffset || cdSize > 256ull * 1024 * 1024 || count > cdSize / 46 + 1) {
+    if (!signature) { *error = WQLocalized(@"Not a ZIP file (no directory found)"); return NO; }
+    if (valid > 1) { *error = WQLocalized(@"The ZIP file is ambiguous (it has more than one directory)"); return NO; }
+    if (valid == 0 || cdSize > 256ull * 1024 * 1024) {
         *error = WQLocalized(@"The ZIP file is damaged (bad directory)");
+        return NO;
+    }
+    if (count > kWQZipMaxEntries) {
+        *error = WQLocalizedFormat(@"This ZIP has too many items (more than %lu).", (unsigned long)kWQZipMaxEntries);
         return NO;
     }
     uint8_t *cd = malloc(cdSize ? (size_t)cdSize : 1);
@@ -397,7 +457,7 @@ static BOOL wq_zip_read_directory(int fd, uint64_t fileSize, WQZipItem **itemsOu
                 const uint8_t *v = x + 4, *vEnd = v + xlen;
                 if (it.usize == kWQZipMax32 && v + 8 <= vEnd) { it.usize = wq_rd64(v); v += 8; }
                 if (it.csize == kWQZipMax32 && v + 8 <= vEnd) { it.csize = wq_rd64(v); v += 8; }
-                if (it.offset == kWQZipMax32 && v + 8 <= vEnd) { it.offset = wq_rd64(v); v += 8; }
+                if (it.offset == kWQZipMax32 && v + 8 <= vEnd) it.offset = wq_rd64(v);
             }
             x += 4 + xlen;
         }
@@ -409,6 +469,9 @@ static BOOL wq_zip_read_directory(int fd, uint64_t fileSize, WQZipItem **itemsOu
         n++;
         pos += 46 + nameLen + extraLen + commentLen;
     }
+    // The records must fill the directory exactly: a short count (e.g. a
+    // 16-bit count that wrapped) would silently drop entries.
+    if (ok && pos != cdSize) ok = NO;
     free(cd);
     if (!ok) {
         for (NSUInteger i = 0; i < n; i++) CFBridgingRelease((__bridge CFTypeRef)items[i].name);
@@ -511,6 +574,11 @@ BOOL wq_zip_extract(NSString *zipPath, NSString *outDir, WQArchiveIO *io, unsign
         NSString *safe = wq_zip_safe_entry_path(it->name);
         if (!safe) {
             ok = NO; error = WQLocalizedFormat(@"The ZIP contains an unsafe name (%@); nothing was extracted.", it->name);
+            break;
+        }
+        if ([safe componentsSeparatedByString:@"/"].count > kWQZipMaxPathDepth ||
+            strlen(safe.fileSystemRepresentation ?: "") > kWQZipMaxPathBytes) {
+            ok = NO; error = WQLocalizedFormat(@"The ZIP contains a path that is too long or too deep (%@); nothing was extracted.", it->name);
             break;
         }
         [safeNames addObject:safe];

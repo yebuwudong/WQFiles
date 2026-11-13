@@ -23,8 +23,13 @@ NSString *_Nullable wq_app_group(void);
 // Asks for a sandbox extension covering path (once per path). Returns YES
 // when one is held for it.
 BOOL wq_grant(NSString *path);
+// Repairs the token cache (App Group Library/Caches) when another app sharing
+// the App Group, or an interrupted run, left it in a state token requests
+// refuse. Renames, never deletes. Logs what it did.
+BOOL wq_reset_access_cache(NSString *_Nullable *_Nullable errorText);
 
-// Directory listing; asks for access when the plain call is refused.
+// Directory listing; asks for access when the plain call is refused. On
+// failure errno holds the reason (EACCES/EPERM for a refusal).
 NSArray<NSString *> *_Nullable wq_list(NSString *dir, NSString *_Nullable *_Nullable errorText);
 
 // Reads a whole file (up to maxBytes; 0 = no limit).
@@ -58,6 +63,13 @@ BOOL wq_write_from_file(NSString *path, NSString *source, NSString *_Nullable *_
 // holding the previous contents, so a caller may remove it after success.
 BOOL wq_write_from_file_with_backup(NSString *path, NSString *source, NSString *_Nullable *_Nullable backupUnit,
                                     NSString *_Nullable *_Nullable errorText);
+// Stores the local file `source` in Backups as the previous version of
+// `originalPath` (nothing at `originalPath` is touched), inside the unit
+// *backupUnit, or a new unit when *backupUnit is nil. For saves whose correct
+// "previous version" is not one file's raw bytes: an SQLite database with its
+// -wal checkpointed into it, so restoring the unit loses no committed rows.
+BOOL wq_backup_local_copy(NSString *originalPath, NSString *source, NSString *_Nullable *_Nonnull backupUnit,
+                          NSString *_Nullable *_Nullable errorText);
 BOOL wq_create_file_from(NSString *path, NSString *source, NSString *_Nullable *_Nullable errorText);
 // Streams a regular file into a staged local path, then replaces the destination.
 // Same-file aliases are refused; failed streaming leaves the destination intact.
@@ -84,8 +96,45 @@ BOOL wq_patch_if_unchanged_get_version(NSString *path, NSDictionary<NSNumber *, 
 BOOL wq_create_file(NSString *path, NSData *data, NSString *_Nullable *_Nullable errorText);
 BOOL wq_create_dir(NSString *path, NSString *_Nullable *_Nullable errorText);
 
+// An item's identity: device, inode and file type, without following a final
+// link. Capture it when the user selects an item; the _expecting forms below
+// fail with a "changed" error when the path no longer names that object.
+NSDictionary<NSString *, NSNumber *> *_Nullable wq_item_identity(NSString *path);
+NSDictionary<NSString *, NSNumber *> *wq_identity_for_stat(const struct stat *st);
+
 // Deletes a file (backed up first) or an empty folder.
 BOOL wq_delete(NSString *path, NSString *_Nullable *_Nullable errorText);
+BOOL wq_delete_expecting(NSString *path, NSDictionary<NSString *, NSNumber *> *_Nullable identity,
+                         NSString *_Nullable *_Nullable errorText);
+// Deletes a file or a whole folder. Every regular file is backed up first, all
+// into one backup unit (*backupUnit), so Recently Deleted can restore them;
+// links and special files are removed without a backup. The folder is walked
+// through pinned descriptors: when the selected folder (or one inside it) is
+// moved or replaced meanwhile, deleting stops and the new item is not touched.
+// Refuses container roots and the folders above them. Stops at the first error
+// (what was deleted stays in Backups). Call off the main thread.
+BOOL wq_delete_tree(NSString *path, BOOL (^_Nullable cancelled)(void), void (^_Nullable progress)(NSUInteger deleted),
+                    NSUInteger *_Nullable deleted, NSString *_Nullable *_Nullable backupUnit, NSString *_Nullable *_Nullable errorText);
+BOOL wq_delete_tree_expecting(NSString *path, NSDictionary<NSString *, NSNumber *> *_Nullable identity,
+                              BOOL (^_Nullable cancelled)(void), void (^_Nullable progress)(NSUInteger deleted),
+                              NSUInteger *_Nullable deleted, NSString *_Nullable *_Nullable backupUnit,
+                              NSString *_Nullable *_Nullable errorText);
+// Whether a folder delete refuses this path (container roots and above).
+BOOL wq_is_protected_folder(NSString *path);
+typedef NS_ENUM(NSInteger, WQTreeCountState) {
+    WQTreeCountExact,        // everything was counted
+    WQTreeCountLimited,      // counting stopped at the limit
+    WQTreeCountUnreadable,   // some folder or item could not be read
+};
+typedef struct {
+    NSUInteger regular;          // regular files: backed up before deletion
+    NSUInteger other;            // links, pipes, sockets, devices: removed without a backup
+    unsigned long long bytes;    // size of the regular files
+    WQTreeCountState state;
+} WQTreeCount;
+// What a delete of path would remove (path itself when it is not a folder;
+// folders are not counted). Counting stops at `limit` items.
+WQTreeCount wq_tree_count(NSString *path, NSUInteger limit);
 // YES for a folder that represents one backup unit: a stamp directly under
 // the file backup root, or a bundle/date folder directly under the app backup
 // root. Used by the backup browser's multi-selection.
@@ -95,9 +144,13 @@ BOOL wq_backup_unit_deletable(NSString *path);
 // copy is made.
 BOOL wq_delete_backup(NSString *path, NSString *_Nullable *_Nullable errorText);
 BOOL wq_rename(NSString *path, NSString *newName, NSString *_Nullable *_Nullable errorText);
+BOOL wq_rename_expecting(NSString *path, NSString *newName, NSDictionary<NSString *, NSNumber *> *_Nullable identity,
+                         NSString *_Nullable *_Nullable errorText);
 // Moves a file or folder into destDir (same volume), keeping its name. Never
 // replaces an existing item; refuses moves into itself and into backups.
 BOOL wq_move(NSString *path, NSString *destDir, NSString *_Nullable *_Nullable errorText);
+BOOL wq_move_expecting(NSString *path, NSString *destDir, NSDictionary<NSString *, NSNumber *> *_Nullable identity,
+                       NSString *_Nullable *_Nullable errorText);
 // Read-only descriptor for a regular file (asks for access when refused), or -1.
 int wq_open_for_reading(NSString *path);
 
@@ -159,6 +212,14 @@ BOOL wq_purge_contents_cancellable(NSString *dir, unsigned long long *freed,
 // copies. This is not an all-children transaction: callers still own tree rollback.
 // Either side may be another app's container. Returns NO if anything failed.
 BOOL wq_copy_contents(NSString *srcDir, NSString *dstDir, NSString *_Nullable *_Nullable errorText);
+// Creates the new folder dstDir as a copy of srcDir's contents, all or
+// nothing: the items are copied into a private sibling first (never replacing
+// anything there), which is renamed to dstDir only when complete and never
+// over an existing item. `cancelled` (optional) is checked between items and
+// right before publication; a failed or cancelled copy removes the sibling and
+// leaves nothing at dstDir. Once it returns YES the copy is published.
+BOOL wq_copy_tree_new(NSString *srcDir, NSString *dstDir, BOOL (^_Nullable cancelled)(void),
+                      NSString *_Nullable *_Nullable errorText);
 
 // MCM container identifier (bundle or group id) of a container folder.
 NSString *_Nullable wq_container_label(NSString *dir);

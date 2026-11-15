@@ -34,7 +34,6 @@ static const NSUInteger kWQSQLiteQueryLimit = 1000;
 @property (nonatomic, readonly, nullable) sqlite3 *db;
 @property (nonatomic, copy, readonly) NSString *sourcePath;
 @property (nonatomic, readonly) BOOL copiedWAL;
-@property (nonatomic, copy, readonly) NSString *privatePath;
 // The app's files when the copy was made; nil if they changed while copying
 // (then the copy can't be saved back).
 @property (nonatomic, copy, nullable) NSDictionary *sourceState;
@@ -92,7 +91,6 @@ static BOOL wq_sqlite_copy(NSString *src, NSString *dst, NSString **error)
         return nil;
     }
     NSString *copy = [_dir stringByAppendingPathComponent:@"db.sqlite"];
-    _privatePath = copy;
     NSDictionary *stateBefore = wq_sqlite_source_state(path);
     if (!wq_sqlite_copy(path, copy, error)) return nil;
     // Recent changes of WAL databases are still in the -wal file. The -shm
@@ -1054,7 +1052,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     dispatch_async(snapshot.queue, ^{
         NSDictionary *newState = nil;
         NSString *error = nil, *unit = nil;
-        BOOL ok = wq_sqlite_save(snapshot.db, snapshot.privatePath, path, state, &newState, &unit, &error);
+        BOOL ok = wq_sqlite_save(snapshot.db, path, state, &newState, &unit, &error);
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_saving = NO;
             if (ok) {

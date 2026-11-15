@@ -49,19 +49,20 @@
 		<string>ru</string>
 		<string>pl</string>
 		<string>tr</string>
+		<string>th</string>
 	</array>
 	<key>CFBundleName</key>
 	<string>WQFiles</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.5</string>
+	<string>0.9.8</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>73</string>
+	<string>88</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

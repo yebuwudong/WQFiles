@@ -1,10 +1,11 @@
 // Saving an edited copy back over a WAL database on the host: the app's
-// pending WAL changes and the edit must both survive, the old WAL must be
-// emptied, and changed sources or hot journals must be refused untouched.
+// pending WAL changes and the edit must both survive. An interrupted save
+// must leave the old database readable, and stale sources must be refused.
 #define WQ_ACCESS_TESTING 1
 #import "../WQAccess.m"
 #import "../WQSQLiteSave.m"
 #include <stdlib.h>
+#include <sys/wait.h>
 SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator) { (void)allocator; return NULL; }
 CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error)
 { (void)task; (void)entitlement; (void)error; return NULL; }
@@ -75,10 +76,21 @@ static sqlite3 *openCopy(NSString *original, NSString *copy)
     return db;
 }
 
-int main(void)
+int main(int argc, const char *argv[])
 {
     @autoreleasepool {
         NSFileManager *fm = NSFileManager.defaultManager;
+        if (argc == 4) {
+            NSString *app = @(argv[1]), *copy = @(argv[2]);
+            wq_test_backup_root = @(argv[3]);
+            sqlite3 *db = openCopy(app, copy);
+            exec(db, "CREATE TABLE large(payload); INSERT INTO large VALUES (zeroblob(2097152));");
+            wq_test_stream_hook = ^(NSString *stage, NSString *__unused path) {
+                if ([stage isEqualToString:@"sqliteBackupInProgress"]) _exit(42);
+            };
+            wq_sqlite_save(db, app, wq_sqlite_source_state(app), NULL, NULL, NULL);
+            return 1;
+        }
         NSString *base = [WQCanonicalVarPath(NSTemporaryDirectory().stringByResolvingSymlinksInPath) stringByAppendingPathComponent:
                           [@"WQSQLiteSaveTests-" stringByAppendingString:NSUUID.UUID.UUIDString]];
         check([fm createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil], @"fixture folder");
@@ -99,9 +111,8 @@ int main(void)
         exec(db, "UPDATE notes SET text='TWO (edited)' WHERE id=2; DELETE FROM notes WHERE id=1;");
         NSDictionary *after = nil;
         NSString *unit = nil, *error = nil;
-        check(wq_sqlite_save(db, copy, app, state, &after, &unit, &error), [@"save succeeds " stringByAppendingString:error ?: @""]);
+        check(wq_sqlite_save(db, app, state, &after, &unit, &error), [@"save succeeds " stringByAppendingString:error ?: @""]);
         check([texts(app) isEqualToArray:@[@"TWO (edited)", @"three, only in the WAL"]], @"edit and the app's WAL-only row are both in the saved database");
-        check(sizeOf([app stringByAppendingString:@"-wal"]) == 0, @"old -wal emptied");
         struct stat saved;
         check(stat(app.fileSystemRepresentation, &saved) == 0 && saved.st_ino == before.st_ino, @"database written in place (same inode)");
         check(unit.length && [fm fileExistsAtPath:unit], @"previous database kept in Backups");
@@ -129,7 +140,7 @@ int main(void)
 
         // A second edit saves against the new state.
         exec(db, "INSERT INTO notes(text) VALUES ('four')");
-        check(wq_sqlite_save(db, copy, app, after, &after, NULL, &error), @"second save succeeds");
+        check(wq_sqlite_save(db, app, after, &after, NULL, &error), @"second save succeeds");
         check([texts(app).lastObject isEqualToString:@"four"], @"second edit saved");
 
         // The app wrote meanwhile: refuse, change nothing.
@@ -139,7 +150,7 @@ int main(void)
         sqlite3_close(appDB);
         NSArray *appRows = texts(app);
         exec(db, "INSERT INTO notes(text) VALUES ('stale edit')");
-        check(!wq_sqlite_save(db, copy, app, after, NULL, NULL, &error) && [texts(app) isEqualToArray:appRows],
+        check(!wq_sqlite_save(db, app, after, NULL, NULL, &error) && [texts(app) isEqualToArray:appRows],
               @"save refused after the app changed the database");
         sqlite3_close(db);
 
@@ -148,9 +159,9 @@ int main(void)
         db = openCopy(app, copy);
         NSString *journal = [app stringByAppendingString:@"-journal"];
         [@"unfinished" writeToFile:journal atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        check(!wq_sqlite_save(db, copy, app, fresh, NULL, NULL, &error) && [error containsString:@"-journal"], @"hot journal refused");
+        check(!wq_sqlite_save(db, app, fresh, NULL, NULL, &error) && [error containsString:@"-journal"], @"hot journal refused");
         [fm removeItemAtPath:journal error:nil];
-        check(wq_sqlite_save(db, copy, app, fresh, NULL, NULL, &error), @"saves once the journal is gone");
+        check(wq_sqlite_save(db, app, fresh, NULL, NULL, &error), @"saves once the journal is gone");
         sqlite3_close(db);
 
         // The saved database is sound for the app.
@@ -161,6 +172,26 @@ int main(void)
         sqlite3_finalize(stmt);
         sqlite3_close(appDB);
         check(ok, @"app database passes integrity_check");
+
+        // Kill a separate saver after the first batch of pages. Reopening the
+        // app database directly must see the old committed state, including WAL rows.
+        NSString *interrupted = [base stringByAppendingPathComponent:@"interrupted.sqlite"];
+        makeAppDB(interrupted);
+        NSString *crashBackups = [base stringByAppendingPathComponent:@"CrashBackups"];
+        const char *appArg = interrupted.fileSystemRepresentation;
+        const char *copyArg = copy.fileSystemRepresentation;
+        const char *backupArg = crashBackups.fileSystemRepresentation;
+        pid_t child = fork();
+        check(child >= 0, @"fork interrupted-save fixture");
+        if (child == 0) {
+            execl(argv[0], argv[0], appArg, copyArg, backupArg, (char *)NULL);
+            _exit(127);
+        }
+        int status = 0;
+        check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 42,
+              @"saver terminated during the SQLite transaction");
+        check([restoredTexts(interrupted) isEqualToArray:@[@"one", @"two", @"three, only in the WAL"]],
+              @"target app can reopen the old database with all committed rows after interruption");
 
         [fm removeItemAtPath:base error:nil];
         puts("All SQLite save tests passed.");

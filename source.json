@@ -21,6 +21,33 @@
       "category": "utilities",
       "versions": [
         {
+          "version": "0.9.8",
+          "buildVersion": "88",
+          "date": "2026-11-14",
+          "size": 817121,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.8/WQFiles.ipa",
+          "localizedDescription": "Reset Access Cache is now in Settings → Troubleshooting (both designs). The Log explains why access is blocked and logs a repeated failure only once.",
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "0.9.7",
+          "buildVersion": "87",
+          "date": "2026-11-14",
+          "size": 814659,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.7/WQFiles.ipa",
+          "localizedDescription": "New design: Home with container cards, tabs for Apps, Clean and Backups, Settings behind the gear. The previous design stays available (Settings → New Design). New screens translated into every language.",
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "0.9.6",
+          "buildVersion": "81",
+          "date": "2026-11-13",
+          "size": 780279,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.6/WQFiles.ipa",
+          "localizedDescription": "New: Search Inside Folders, Largest Files, Get Info, Duplicate, Copy to Folder, Favorites, Reopen Last Folder, update notice, Extract and Open for ZIPs, Thai. Safer SQLite save and app restore. Fixed: app backups could come out empty; app names and missing app folders on iOS versions with an unknown app database layout.",
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "0.9.5",
           "buildVersion": "73",
           "date": "2026-11-13",

@@ -61,6 +61,9 @@ BOOL wq_write_if_unchanged_get_version(NSString *path, NSData *data,
 BOOL wq_write_from_file(NSString *path, NSString *source, NSString *_Nullable *_Nullable errorText);
 // As wq_write_from_file; *backupUnit gets the backup folder (Backups/<stamp>)
 // holding the previous contents, so a caller may remove it after success.
+BOOL wq_write_from_file_if_unchanged(NSString *path, NSString *source,
+                                     NSDictionary<NSString *, NSNumber *> *expected,
+                                     NSString *_Nullable *_Nullable errorText);
 BOOL wq_write_from_file_with_backup(NSString *path, NSString *source, NSString *_Nullable *_Nullable backupUnit,
                                     NSString *_Nullable *_Nullable errorText);
 // Stores the local file `source` in Backups as the previous version of

@@ -2,15 +2,10 @@
 //  WQSQLiteSave.h
 //  WQ Files
 //
-//  Writes an edited private copy of an SQLite database back over another
-//  app's database. The copy holds everything (its WAL is checkpointed into
-//  it), so after the main file is written in place the app's old -wal and
-//  -shm are emptied: otherwise SQLite would replay stale WAL frames on top of
-//  the new file and corrupt it. Refuses when the app changed the files since
-//  the copy was made or left a hot rollback journal; if emptying the old WAL
-//  fails, the original database is put back. The app must not be running.
+//  Installs an edited private copy using SQLite's destination transaction.
+//  Refuses changed sources and unfinished rollback journals. The target app
+//  must be closed while saving.
 //
-
 #import <Foundation/Foundation.h>
 #import <sqlite3.h>
 
@@ -21,15 +16,14 @@ NS_ASSUME_NONNULL_BEGIN
 // database itself can't be read.
 NSDictionary *_Nullable wq_sqlite_source_state(NSString *path);
 
-// Checkpoints and checks `copyDB` (the open private copy at `copyPath`), then
-// writes it over `original` and empties the original's -wal and -shm.
+// Checks the private copy and installs it into `original` through SQLite.
 // `state` is what wq_sqlite_source_state returned when the copy was made;
 // *newState gets the state after saving (for the next save), *backupUnit the
 // Backups folder holding the previous database: one unit with the old main
 // file with its old -wal checkpointed into it (so it holds every committed
 // row on its own) and, if the app had a -wal, an empty -wal beside it.
 // Restoring that unit (or just its main file) restores the whole database.
-BOOL wq_sqlite_save(sqlite3 *copyDB, NSString *copyPath, NSString *original, NSDictionary *state,
+BOOL wq_sqlite_save(sqlite3 *copyDB, NSString *original, NSDictionary *state,
                     NSDictionary *_Nullable *_Nullable newState, NSString *_Nullable *_Nullable backupUnit,
                     NSString *_Nullable *_Nullable error);
 

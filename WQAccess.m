@@ -177,6 +177,47 @@ BOOL wq_system_areas_reachable(void)
     return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
 }
 
+// What Library looks like when the Caches swap can't be undone, for the Log:
+// the swap marker, the preserved folder and what Caches is now.
+static NSString *wq_cache_state(int library)
+{
+    struct stat st;
+    NSString *marker = fstatat(library, WQCacheMarker, &st, AT_SYMLINK_NOFOLLOW) == 0 ? @"present" : @"none";
+    NSString *saved = fstatat(library, WQCacheSaved, &st, AT_SYMLINK_NOFOLLOW) == 0
+        ? (S_ISDIR(st.st_mode) ? @"folder" : @"not a folder") : @"none";
+    NSString *caches;
+    if (fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        caches = errno == ENOENT ? @"missing" : wq_errno(errno);
+    } else if (S_ISLNK(st.st_mode)) {
+        char link[1024];
+        ssize_t n = readlinkat(library, "Caches", link, sizeof(link) - 1);
+        link[n > 0 ? n : 0] = 0;
+        caches = [@"link to " stringByAppendingString:@(link) ?: @"?"];
+    } else {
+        caches = S_ISDIR(st.st_mode) ? @"folder" : @"not a folder";
+    }
+    return [NSString stringWithFormat:@"swap marker %@, preserved Caches %@, Caches %@", marker, saved, caches];
+}
+
+// Logged in full the first time and whenever the reason or state changes;
+// repeats (every token request fails the same way) are only counted.
+static void wq_log_recovery_failure(NSString *libraryPath, int error, NSString *state)
+{
+    static NSString *last;
+    static NSUInteger repeats;
+    NSString *line = [NSString stringWithFormat:@"%@ (%@; %@)", libraryPath, wq_errno(error), state];
+    @synchronized (NSFileManager.class) {
+        if ([line isEqualToString:last]) {
+            repeats++;
+            if (repeats % 25 == 0) wq_log(@"token cache recovery still failing (%lu more times)", (unsigned long)repeats);
+            return;
+        }
+        last = line;
+        repeats = 0;
+    }
+    wq_log(@"token cache recovery failed: %@; preserved contents retained. Every folder outside WQ Files is refused until this is repaired: Settings → Reset Access Cache.", line);
+}
+
 static int64_t wq_query(NSString *target, BOOL altFlags)
 {
     NSString *group = wq_app_group();
@@ -205,7 +246,8 @@ static int64_t wq_query(NSString *target, BOOL altFlags)
         handle = -9;
     } @finally {
         if (!WQCacheSwapRecover(library)) {
-            wq_log(@"token cache recovery failed: %@; preserved contents retained", libraryPath);
+            int error = errno;
+            wq_log_recovery_failure(libraryPath, error, wq_cache_state(library));
             if (handle >= 0) wq_release_handle(handle);
             handle = -8;
         }
@@ -884,13 +926,27 @@ BOOL wq_write_from_file(NSString *path, NSString *source, NSString **errorText)
     return wq_write_from_file_with_backup(path, source, NULL, errorText);
 }
 
+static BOOL wq_write_from_file_checked(NSString *path, NSString *source, NSDictionary *expected,
+                                       NSString **backupUnit, NSString **errorText);
+
 BOOL wq_write_from_file_with_backup(NSString *path, NSString *source, NSString **backupUnit, NSString **errorText)
+{
+    return wq_write_from_file_checked(path, source, nil, backupUnit, errorText);
+}
+
+BOOL wq_write_from_file_if_unchanged(NSString *path, NSString *source, NSDictionary *expected, NSString **errorText)
+{
+    return wq_write_from_file_checked(path, source, expected, NULL, errorText);
+}
+
+static BOOL wq_write_from_file_checked(NSString *path, NSString *source, NSDictionary *expected,
+                                       NSString **backupUnit, NSString **errorText)
 {
     if (backupUnit) *backupUnit = nil;
     int in = WQOpenRegularAt(AT_FDCWD, source.fileSystemRepresentation, O_RDONLY, 0);
     if (in < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
     WQMutation mutation;
-    if (!wq_mutation_open(path, nil, &mutation, O_RDWR, errorText)) { close(in); return NO; }
+    if (!wq_mutation_open(path, expected, &mutation, O_RDWR, errorText)) { close(in); return NO; }
     struct stat src;
     if (fstat(in, &src) != 0 || WQSameObject(&src, &mutation.before)) {
         if (errorText) *errorText = WQLocalized(@"Source and destination are the same file");
@@ -960,7 +1016,7 @@ BOOL wq_create_file_from(NSString *path, NSString *source, NSString **errorText)
         if (errorText) *errorText = WQLocalized(@"Invalid file path");
         return NO;
     }
-    int in = WQOpenRegularAt(AT_FDCWD, source.fileSystemRepresentation, O_RDONLY, 0);
+    int in = wq_open(source, O_RDONLY, 0);
     if (in < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
     NSString *parentPath = path.stringByDeletingLastPathComponent;
     int parent = wq_open_directory_flags(parentPath, O_SEARCH);

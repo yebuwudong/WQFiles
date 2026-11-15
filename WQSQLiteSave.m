@@ -87,7 +87,46 @@ static BOOL wq_sqlite_fail(NSString **error, NSString *text)
     return NO;
 }
 
-BOOL wq_sqlite_save(sqlite3 *copyDB, NSString *copyPath, NSString *original, NSDictionary *state,
+// SQLite owns the destination transaction, including WAL/journal handling.
+// Closing or terminating this process mid-copy leaves SQLite able to recover
+// the original database when the target app opens it.
+static BOOL wq_sqlite_install(sqlite3 *source, NSString *original, NSString **error)
+{
+    // SQLite may need to create or open its journal and sidecars itself.
+    wq_grant(original.stringByDeletingLastPathComponent);
+    sqlite3 *destination = NULL;
+    int rc = sqlite3_open_v2(original.fileSystemRepresentation, &destination,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOFOLLOW, NULL);
+    if ((rc == SQLITE_PERM || rc == SQLITE_CANTOPEN || rc == SQLITE_READONLY) && wq_grant(original)) {
+        sqlite3_close(destination);
+        destination = NULL;
+        rc = sqlite3_open_v2(original.fileSystemRepresentation, &destination,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOFOLLOW, NULL);
+    }
+    if (rc == SQLITE_OK)
+        rc = sqlite3_exec(destination, "PRAGMA synchronous=FULL", NULL, NULL, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_backup *backup = sqlite3_backup_init(destination, "main", source, "main");
+        if (!backup) {
+            rc = sqlite3_errcode(destination);
+        } else {
+            do {
+                rc = sqlite3_backup_step(backup, 64);
+#ifdef WQ_ACCESS_TESTING
+                if (rc == SQLITE_OK) WQ_STREAM_HOOK(@"sqliteBackupInProgress", original);
+#endif
+            } while (rc == SQLITE_OK);
+            int finish = sqlite3_backup_finish(backup);
+            if (rc == SQLITE_DONE) rc = finish;
+        }
+    }
+    if (rc != SQLITE_OK && error)
+        *error = destination ? @(sqlite3_errmsg(destination)) : @(sqlite3_errstr(rc));
+    sqlite3_close(destination);
+    return rc == SQLITE_OK;
+}
+
+BOOL wq_sqlite_save(sqlite3 *copyDB, NSString *original, NSDictionary *state,
                     NSDictionary **newState, NSString **backupUnit, NSString **error)
 {
     if (newState) *newState = nil;
@@ -111,17 +150,15 @@ BOOL wq_sqlite_save(sqlite3 *copyDB, NSString *copyPath, NSString *original, NSD
     if (problem)
         return wq_sqlite_fail(error, WQLocalizedFormat(@"The edited copy failed SQLite's integrity check, so nothing was saved: %@", problem));
 
-    // Untouched copies of the app's files, to put back if emptying the old
-    // WAL fails after the database was written.
+    // Capture the previous database and its WAL for the user-visible backup.
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"wq-sqlite-save-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *keepMain = [dir stringByAppendingPathComponent:@"main"], *keepWAL = [dir stringByAppendingPathComponent:@"wal"];
     NSString *empty = [dir stringByAppendingPathComponent:@"empty"];
-    NSString *wal = wq_sqlite_side(original, @"-wal"), *shm = wq_sqlite_side(original, @"-shm");
+    NSString *wal = wq_sqlite_side(original, @"-wal");
     BOOL walExists = wq_sqlite_side_exists(wal, &st);
     BOOL hasWAL = walExists && st.st_size > 0;
-    BOOL hasSHM = wq_sqlite_side_exists(shm, &st) && st.st_size > 0;
     NSString *copyError = nil;
     if (!wq_copy_to_local(original, keepMain, &copyError) || (hasWAL && !wq_copy_to_local(wal, keepWAL, &copyError)) ||
         ![fm createFileAtPath:empty contents:[NSData data] attributes:nil]) {
@@ -147,34 +184,16 @@ BOOL wq_sqlite_save(sqlite3 *copyDB, NSString *copyPath, NSString *original, NSD
         return wq_sqlite_fail(error, WQLocalizedFormat(@"Could not make a safety copy first: %@", copyError ?: @"?"));
     }
 
-    // Each write below also keeps the raw previous file in a unit of its own;
-    // those are dropped after success, as `unit` holds the whole database.
-    NSString *writeError = nil, *rawMain = nil, *rawWAL = nil, *rawSHM = nil;
-    if (!wq_write_from_file_with_backup(original, copyPath, &rawMain, &writeError)) {
+    NSString *writeError = nil;
+    if (![wq_sqlite_source_state(original) isEqualToDictionary:state]) {
         [fm removeItemAtPath:dir error:nil];
-        return wq_sqlite_fail(error, WQLocalizedFormat(@"The database could not be written: %@", writeError ?: @"?"));
+        return wq_sqlite_fail(error, WQLocalized(@"The app changed the database since it was opened here. Saving would overwrite those changes: discard yours, close the app and open the database again."));
     }
-    NSString *sideError = nil;
-    BOOL sidesOK = (!hasWAL || wq_write_from_file_with_backup(wal, empty, &rawWAL, &sideError)) &&
-                   (!hasSHM || wq_write_from_file_with_backup(shm, empty, &rawSHM, &sideError));
-    if (!sidesOK) {
-        // The new database with the old WAL would be corrupt: put both back.
-        NSString *undoError = nil;
-        BOOL undone = wq_write_from_file(original, keepMain, &undoError) && (!hasWAL || wq_write_from_file(wal, keepWAL, &undoError));
-        wq_log(@"sqlite: emptying the old -wal/-shm of %@ failed (%@); original %@; previous database in %@", original, sideError,
-               undone ? @"put back" : [@"NOT put back: " stringByAppendingString:undoError ?: @"?"], unit.lastPathComponent);
-        [fm removeItemAtPath:dir error:nil];
-        return wq_sqlite_fail(error, undone
-            ? WQLocalizedFormat(@"The app's -wal file could not be emptied (%@), so the original database was put back. Nothing changed.", sideError ?: @"?")
-            : WQLocalizedFormat(@"The app's -wal file could not be emptied (%@) and the original could not be put back (%@). Restore the database from Backups before opening the app.", sideError ?: @"?", undoError ?: @"?"));
-    }
+    BOOL installed = wq_sqlite_install(copyDB, original, &writeError);
     [fm removeItemAtPath:dir error:nil];
-    for (NSString *raw in @[rawMain ?: @"", rawWAL ?: @"", rawSHM ?: @""]) {
-        NSString *dropError = nil;
-        if (raw.length && ![raw isEqualToString:unit] && !wq_delete_backup(raw, &dropError))
-            wq_log(@"sqlite: could not drop the raw backup %@ (%@)", raw.lastPathComponent, dropError ?: @"?");
-    }
-    wq_log(@"sqlite: saved %@ (backup %@%@)", original, unit.lastPathComponent ?: @"?", hasWAL ? @", old -wal emptied" : @"");
+    if (!installed)
+        return wq_sqlite_fail(error, WQLocalizedFormat(@"The database could not be written: %@", writeError ?: @"?"));
+    wq_log(@"sqlite: saved %@ (backup %@)", original, unit.lastPathComponent);
     if (backupUnit) *backupUnit = unit;
     if (newState) *newState = wq_sqlite_source_state(original);
     return YES;

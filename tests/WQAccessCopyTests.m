@@ -20,6 +20,7 @@ int main(void)
         NSString *base = [WQCanonicalVarPath(NSTemporaryDirectory().stringByResolvingSymlinksInPath) stringByAppendingPathComponent:
                           [@"WQAccessCopyTests-" stringByAppendingString:NSUUID.UUID.UUIDString]];
         mkdirs(base);
+        wq_test_backup_root = [base stringByAppendingPathComponent:@"Backups"];
         @try {
             NSString *file = [base stringByAppendingPathComponent:@"source-file"];
             NSString *dest = [base stringByAppendingPathComponent:@"destination-file"];
@@ -34,6 +35,12 @@ int main(void)
             check(unlink(dest.fileSystemRepresentation) == 0, @"remove alias fixture");
             put(dest, @"old bytes");
             check(wq_copy_to_local(file, dest, &error) && has(dest, @"source bytes"), @"normal staged local copy replaces destination");
+            NSDictionary *approved = wq_file_version(dest);
+            put(dest, @"new destination bytes");
+            check(!wq_write_from_file_if_unchanged(dest, file, approved, &error) &&
+                  has(dest, @"new destination bytes"), @"streamed replacement refuses a changed destination");
+            check(wq_write_from_file_if_unchanged(dest, file, wq_file_version(dest), &error) &&
+                  has(dest, @"source bytes"), @"streamed replacement accepts the approved version");
             NSString *directory = [base stringByAppendingPathComponent:@"directory"];
             mkdirs(directory); put([directory stringByAppendingPathComponent:@"sentinel"], @"directory bytes");
             check(!wq_copy_to_local(file, directory, &error) && has([directory stringByAppendingPathComponent:@"sentinel"], @"directory bytes"), @"directory destination is preserved");

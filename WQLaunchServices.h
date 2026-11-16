@@ -36,4 +36,13 @@ NSString *_Nullable wq_bundle_path_for_id(NSString *bundleID);
 // wq_bundle_id_for_container also labels these.
 NSArray<NSString *> *wq_ls_bundle_containers(void);
 
+// App Group folder -> group id (issue #59). The database keeps each app's
+// group containers as an embedded binary plist ({group id: folder path},
+// sometimes inside a persona dictionary). Only folders that every record
+// names with the same single id are mapped. Keys are canonical
+// /private/var/mobile/Containers/Shared/AppGroup/<UUID> paths.
+NSDictionary<NSString *, NSString *> *wq_ls_group_ids_from_store(NSData *data);
+// The group id the current database gives `path`, or nil.
+NSString *_Nullable wq_group_id_for_container(NSString *path);
+
 NS_ASSUME_NONNULL_END

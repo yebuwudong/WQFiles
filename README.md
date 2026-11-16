@@ -3,7 +3,9 @@
 **WQ Files** is a file browser, app data manager and cache cleaner for iOS 26
 and 27. "WQ" stands for worse_query, the sandbox technique it is built on. It
 reaches other apps' and system containers with no jailbreak and no kernel
-exploit. Tested on iOS 26.7.1, 27.0.1, 27.2.1 and the 27.3 beta (confirmed by a user).
+exploit. Tested on iOS 26.5 to the 27.3 beta; see [Tested devices](#tested-devices).
+
+<p align="center"><img src="screenshots/ipad-home.webp" width="520" alt="WQ Files home screen on iPad"></p>
 
 **iOS 26 (26.0 to 26.7.2):** supported since 0.7; tested on 26.7.1. worse_query reaches the app, extension, daemon and app group
 containers there, but not System Data or the system groups, so WQ Files hides
@@ -17,9 +19,27 @@ don't: iOS 26 hands WQ Files only placeholder icons and doesn't let it read
 other apps' bundles, so apps show symbol tiles.
 
 WQ Files is available in English, German, Italian, Spanish, Portuguese
-(Brazil), Russian, Polish, Turkish, Thai, Korean, Arabic and Simplified Chinese. It follows
+(Brazil), Russian, Polish, Turkish, Thai, Vietnamese, Korean, Arabic and Simplified Chinese. It follows
 the device language; **Language** in WQ Files' Settings picks another, used
 from the next start.
+
+## Tested devices
+
+Tested by the maintainer on:
+
+| Device | iOS |
+|---|---|
+| iPhone 16 Pro Max (iPhone17,2) | 27.2.1 |
+| iPhone 17 Pro Max (iPhone18,2) | 27.0.1 |
+| iPad Air 5 | iPadOS 27.0.1 |
+| iPhone 14 Pro (iPhone15,2) | 26.7.1 |
+
+Users have also reported it working on iOS 26.5, 27.2 and the 27.3 beta.
+Works on a device or iOS version not listed here? Open an issue with the Log
+(Settings → Log → Share).
+
+**Not supported:** iOS 18 and older. worse_query doesn't exist there; WQ Files shows a notice instead of scanning. On iOS 17 and 18 use
+[Cyanide](https://github.com/kolbicz/Cyanide).
 
 ## What it opens
 
@@ -58,8 +78,25 @@ new files.
   into a normal verified backup of that app, ready to restore; data that says
   it belongs to a different app asks first. Show all apps, only Apple's, only others, only backed-up
   ones, or only installed or offloaded ones (when nearly every app's state can be read); long-press to copy the bundle ID or container path.
-  Apps and the Cache Cleaner keep their list between visits and rescan on
-  their own after 10 minutes; pull down to rescan any time. `tmp` is intentionally ephemeral: clear removes it, but app
+  Apps and the Cache Cleaner keep their last results, including across app
+  launches. Scanning is a task, not a page lifetime: switch tabs or leave the
+  screen without discarding work. **Pause Scan** keeps progress; **Resume Scan**
+  continues it. Pull to refresh explicitly starts a new measurement, while the
+  previous result stays visible with its timestamp. There is no automatic
+  ten-minute rescan.
+  When iOS backgrounds the app, scan workers pause at a work boundary and
+  continue on return. After termination, opening the relevant screen resumes an
+  interrupted task; an explicitly paused task stays paused. Completed inode
+  ranges and directory measurements are saved in app-private Application Support
+  (excluded from backups). A restart may replay the current directory and work
+  since the last checkpoint (writes are coalesced to about one second), not the
+  whole scan. Sizes can include earlier measurements: refresh for current sizes.
+  The filesystem is not a snapshot; cache cleaning still revalidates target
+  identities before deleting anything, and restored results are not preselected.
+  Read-only scan orchestration uses its own queue; directory measurement yields
+  the serial mutation queue between directories so other file operations can run.
+  iOS still controls when a suspended or terminated app can execute.
+  `tmp` is intentionally ephemeral: clear removes it, but app
   backups do not include it and restore leaves the current `tmp` untouched.
 - **Cache Cleaner**: cache and temp size per app, with search, Select All /
   None / Large Caches (50 MB+) and crash logs. Long-press an app to jump to its
@@ -276,12 +313,24 @@ existing release description is preserved when no new notes are supplied.
 
 ## Regression tests
 
-Run `./tests/run_all_tests.sh` on macOS with Xcode and Python 3. It runs twelve
+Run `./tests/run_all_tests.sh` on macOS with Xcode and Python 3. It runs
 portable Foundation fixture executables, the Python release fixtures, static
 browser checks, and strict iOS arm64 compilation/linkage. Logs and generated
 files stay under `.work/tests/`; the existing IPA is not replaced. With only
 Command Line Tools installed, set `WQ_SKIP_IOS_CHECK=1` to run the host tests.
 Set `WQ_ASAN=1` to compile the host fixtures with AddressSanitizer.
+
+For UIKit navigation and recovery checks on a disposable, booted simulator, run
+`WQ_SIMULATOR_UDID=<device-id> ./tests/run_scan_ui_tests.sh`. It runs the real
+Apps/Clean controllers with fixture task results, switches tabs, rebuilds a
+screen, backgrounds the app via Settings, terminates/relaunches it, and checks
+that foreground I/O can run between measurement steps. It does not open
+Simulator.app or exercise the sandbox technique. A screenshot and build artifacts
+are retained under `.work/tests/`.
+
+The host recovery fixtures also terminate a scan process without a shutdown
+callback and verify recovery in a new process, including out-of-order inode
+chunks, changed root identity, failed writes, and rapid pause/resume races.
 
 These tests use disposable files and entitlement/access doubles. They do not
 issue sandbox tokens or mutate installed app containers. Real iOS signing,
@@ -290,8 +339,8 @@ concurrent writes still require supported-device validation.
 
 ## Translations
 
-WQ Files is in English, German, Italian, Spanish, Portuguese (Brazil), Russian, Polish, Turkish, Thai, Korean,
-Arabic and Simplified Chinese. New languages and corrections are welcome as pull requests:
+WQ Files is in English, German, Italian, Spanish, Portuguese (Brazil), Russian, Polish, Turkish, Thai,
+Vietnamese, Korean, Arabic and Simplified Chinese. New languages and corrections are welcome as pull requests:
 
 - **Correct a translation:** edit the line in `<language>.lproj/Localizable.strings`
   (for example `it.lproj`). The English text on the left is the key; change
@@ -322,5 +371,7 @@ welcome.
 - Korean translation: [hooray804](https://github.com/hooray804)
 - Russian translation: [Reinascape](https://github.com/Reinascape)
   ([#40](https://github.com/kolbicz/WQFiles/pull/40)).
+- Vietnamese translation: [romlayvn-93](https://github.com/romlayvn-93)
+  ([#62](https://github.com/kolbicz/WQFiles/pull/62)).
 
 WQ Files is GPL-3.0-or-later (see `LICENSE`).

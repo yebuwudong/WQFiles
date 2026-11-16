@@ -966,3 +966,16 @@
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "Сбросить кэш доступа: используйте, если папки остаются пустыми или проверка при запуске сообщает, что доступ к песочнице не удался. Восстанавливает собственную папку кэша WQ Files в её App Group; ничего не удаляется.";
 "Access Cache Reset" = "Кэш доступа сброшен";
 "The access cache was repaired. If folders still stay empty, send the Log." = "Кэш доступа восстановлен. Если папки по-прежнему пусты, отправьте журнал.";
+"Plain Background" = "Простой фон";
+"Plain Background: a plain black (or white) background instead of the colored one." = "Простой фон: однотонный чёрный (или белый) фон вместо цветного.";
+"No access" = "Нет доступа";
+"This item belongs to %@ (mode %o). WQ Files runs as mobile (uid %d) and can't open it; no app without root can." = "Этот объект принадлежит %@ (режим %o). WQ Files работает как mobile (uid %d) и не может его открыть; без root этого не может ни одно приложение.";
+"iOS %@ isn't supported" = "iOS %@ не поддерживается";
+"WQ Files needs iOS 26 or 27. The sandbox escape it uses only exists there, so on this version every folder stays closed.\n\nOn iOS 17 and 18, Cyanide can browse these folders." = "WQ Files нужна iOS 26 или 27. Выход из песочницы, который она использует, есть только там, поэтому на этой версии все папки остаются закрытыми.\n\nНа iOS 17 и 18 эти папки можно просматривать в Cyanide.";
+"Cyanide on GitHub" = "Cyanide на GitHub";
+"Scan paused" = "Сканирование приостановлено";
+"Scan queued; previous results kept" = "Сканирование в очереди; прежние результаты сохранены";
+"Last scanned %@ · Pull to refresh" = "Последнее сканирование %@ · Потяните для обновления";
+"Pause Scan" = "Приостановить сканирование";
+"Resume Scan" = "Продолжить сканирование";
+"Could not save scan state. Keep WQ Files open." = "Не удалось сохранить состояние сканирования. Не закрывайте WQ Files.";

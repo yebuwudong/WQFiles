@@ -962,3 +962,16 @@
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "Ripristina cache di accesso: usala quando le cartelle restano vuote o il controllo all'avvio indica che l'accesso alla sandbox non è riuscito. Ripara la cartella cache di WQ Files nel suo App Group; non viene eliminato nulla.";
 "Access Cache Reset" = "Cache di accesso ripristinata";
 "The access cache was repaired. If folders still stay empty, send the Log." = "La cache di accesso è stata riparata. Se le cartelle restano ancora vuote, invia il Log.";
+"Plain Background" = "Sfondo semplice";
+"Plain Background: a plain black (or white) background instead of the colored one." = "Sfondo semplice: uno sfondo nero (o bianco) uniforme invece di quello colorato.";
+"No access" = "Nessun accesso";
+"This item belongs to %@ (mode %o). WQ Files runs as mobile (uid %d) and can't open it; no app without root can." = "Questo elemento appartiene a %@ (modalità %o). WQ Files viene eseguito come mobile (uid %d) e non può aprirlo; nessuna app senza root può farlo.";
+"iOS %@ isn't supported" = "iOS %@ non è supportato";
+"WQ Files needs iOS 26 or 27. The sandbox escape it uses only exists there, so on this version every folder stays closed.\n\nOn iOS 17 and 18, Cyanide can browse these folders." = "WQ Files richiede iOS 26 o 27. L'uscita dalla sandbox che usa esiste solo lì, quindi su questa versione ogni cartella resta chiusa.\n\nSu iOS 17 e 18, Cyanide può sfogliare queste cartelle.";
+"Cyanide on GitHub" = "Cyanide su GitHub";
+"Scan paused" = "Scansione in pausa";
+"Scan queued; previous results kept" = "Scansione in coda; risultati precedenti mantenuti";
+"Last scanned %@ · Pull to refresh" = "Ultima scansione %@ · Trascina per aggiornare";
+"Pause Scan" = "Metti in pausa la scansione";
+"Resume Scan" = "Riprendi la scansione";
+"Could not save scan state. Keep WQ Files open." = "Impossibile salvare lo stato della scansione. Tieni aperto WQ Files.";

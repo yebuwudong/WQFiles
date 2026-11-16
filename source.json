@@ -21,6 +21,33 @@
       "category": "utilities",
       "versions": [
         {
+          "version": "0.9.11",
+          "buildVersion": "92",
+          "date": "2026-11-15",
+          "size": 1969224,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.11/WQFiles.ipa",
+          "localizedDescription": "Vietnamese translation. Apps and Clean scans keep running across tabs and app restarts, with Pause/Resume and a spinner or clock in the tab bar.",
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "0.9.10",
+          "buildVersion": "90",
+          "date": "2026-11-15",
+          "size": 1918805,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.10/WQFiles.ipa",
+          "localizedDescription": "Fixes installed apps missing from Apps, App Data and Extension Data (e.g. on iOS 26.5).",
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "0.9.9",
+          "buildVersion": "89",
+          "date": "2026-11-15",
+          "size": 1918433,
+          "downloadURL": "https://github.com/kolbicz/WQFiles/releases/download/v0.9.9/WQFiles.ipa",
+          "localizedDescription": "App Groups now show their names on iOS 27.2+. Plain Background option, dark and tinted app icon, files you can't open are dimmed, and a clear notice on iOS 18 and older.",
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "0.9.8",
           "buildVersion": "88",
           "date": "2026-11-14",

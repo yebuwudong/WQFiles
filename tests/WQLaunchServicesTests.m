@@ -192,6 +192,13 @@ static void TestContainerMapping(NSString *path)
     WQCheck(wq_bundle_id_for_container([kBundleContainer stringByAppendingString:@"/Example.app"]) == nil);
     // A display name whose length is a multiple of 4 has no terminator.
     WQCheck([wq_display_name(@"com.example.app") isEqualToString:@"AppName8"]);
+    // A container no record can be trusted for is still listed (UC Browser
+    // missing from Apps on iOS 26.5); its label comes from the folder.
+    NSArray<NSString *> *all = wq_ls_container_paths(nil);
+    WQCheck([all containsObject:kAppPath]);
+    WQCheck([all containsObject:kPluginPath]);
+    WQCheck([all containsObject:kSharedPath]);
+    WQCheck([[NSSet setWithArray:all] count] == all.count);
 }
 
 // iOS 27.3 (issue #50): app records as on 27.2 (0x25c: +0x0c id, +0x6c
@@ -355,6 +362,32 @@ static void TestLayoutDiagnosticsBudget(void)
 }
 #endif
 
+// Issue #59: App Group folders named by the plists embedded in app records.
+static void TestGroupIDsFromEmbeddedPlists(void)
+{
+    NSString *root = @"/private/var/mobile/Containers/Shared/AppGroup/";
+    NSString *a = [root stringByAppendingString:@"11111111-2222-3333-4444-555555555555"];
+    NSString *b = [root stringByAppendingString:@"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"];   // lower case in the record
+    NSString *c = [root stringByAppendingString:@"99999999-8888-7777-6666-555555555555"];
+    NSMutableData *store = [NSMutableData dataWithLength:300];
+    void (^append)(id) = ^(id plist) {
+        NSData *bin = [NSPropertyListSerialization dataWithPropertyList:plist format:NSPropertyListBinaryFormat_v1_0 options:0 error:NULL];
+        [store appendData:bin];
+        [store appendData:[NSMutableData dataWithLength:77]];
+    };
+    append(@{@"__NO_PERSONA__": @{@"group.com.example.a": a, @"group.com.example.b": [b stringByAppendingString:@"/"]}});
+    append(@{@"group.com.example.a": [a stringByReplacingOccurrencesOfString:@"/private/var" withString:@"/var"]});
+    append(@{@"group.com.example.c": c});
+    append(@{@"group.com.other.c": c});   // two ids for one folder: no label
+    append(@[@{@"not a group id": a}]);    // implausible key: ignored
+    NSDictionary *map = wq_ls_group_ids_from_store(store);
+    WQCheck([map[a] isEqualToString:@"group.com.example.a"]);
+    WQCheck([map[[root stringByAppendingString:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"]] isEqualToString:@"group.com.example.b"]);
+    WQCheck(map[c] == nil);
+    WQCheck(map.count == 2);
+    WQCheck([wq_ls_group_ids_from_store([NSData data]) count] == 0);
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -372,6 +405,7 @@ int main(void)
             TestContainerMapping(path);
             Test27_3Layout(path);
             TestOversizedStoreFailsClosed(path);
+            TestGroupIDsFromEmbeddedPlists();
         } @finally {
             [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
             if (oldPreference) [NSUserDefaults.standardUserDefaults setObject:oldPreference forKey:@"WQLaunchServicesStore"];

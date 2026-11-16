@@ -7,6 +7,8 @@
 #import "WQCache.h"
 #import "WQDir.h"
 #import "WQUI.h"
+#import "WQScanTask.h"
+#import "WQScanJournal.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import "WQCacheSafety.h"
@@ -116,12 +118,12 @@ typedef NS_ENUM(NSInteger, WQCacheMeasurementState) {
     WQCacheMeasurementCancelled,
 };
 
-static WQCacheMeasurementState WQCacheMeasureDirectory(NSString *path,
+static WQCacheMeasurementState WQCacheMeasureDirectory(NSString *path, NSString *taskID,
                                                         WQScanCancellation *cancellation,
                                                         unsigned long long *bytes)
 {
     unsigned long long total = 0;
-    WQMeasureResult result = wq_measure_tree(path, cancellation, &total);
+    WQMeasureResult result = wq_measure_tree_resumable(path, @"clean", taskID, cancellation, &total, ^(void (^work)(void)) { wq_scan_read(work); });
     switch (result) {
         case WQMeasureResultMissing:
             return WQCacheMeasurementMissing;
@@ -369,6 +371,10 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 @end
 
 @implementation WQCacheCleanerViewController {
+    WQScanTask *_scanTask;
+    NSDictionary *_shownScanResult;
+    BOOL _resumeScan;
+
     NSArray<WQCacheItem *> *_items;
     NSArray<WQCacheItem *> *_visibleItems;
     NSString *_query;
@@ -381,12 +387,79 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     WQScanCancellation *_scanCancellation;
     WQScanCancellation *_cleanCancellation;
     NSUInteger _scanGeneration;
-    NSTimeInterval _lastScanFinished;
     float _scanProgress;   // 0…1 while scanning
     unsigned long long _scanBytes;   // found so far while scanning
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
+
+
+- (NSDictionary *)snapshotRows:(NSArray<WQCacheItem *> *)rows note:(NSString *)note
+{
+    NSMutableArray *saved = [NSMutableArray new];
+    for (WQCacheItem *item in rows) {
+        NSMutableDictionary *encoded = [WQScanEncode(item, @[@"name", @"bundleID", @"containerPath", @"cacheBytes", @"tempBytes", @"cacheKnown", @"tempKnown", @"limited", @"crashLogs", @"containerIdentityKnown", @"containerDevice", @"containerInode", @"containerMode"]) mutableCopy];
+        NSMutableArray *records = [NSMutableArray new];
+        for (WQCacheTargetRecord *record in item.targetRecords)
+            [records addObject:WQScanEncode(record, @[@"path", @"relativePath", @"existed", @"identityKnown", @"device", @"inode", @"mode"])];
+        encoded[@"records"] = records;
+        [saved addObject:encoded];
+    }
+    return @{@"rows": saved, @"note": note ?: @""};
+}
+
+- (void)scanTaskChanged:(NSNotification *__unused)notification
+{
+    if (_cleaning) return;
+    NSDictionary *result = _scanTask.result;
+    if (result && result != _shownScanResult) {
+        NSMutableArray *rows = [NSMutableArray new];
+        for (id encoded in [result[@"rows"] isKindOfClass:NSArray.class] ? result[@"rows"] : @[]) {
+            if (![encoded isKindOfClass:NSDictionary.class]) continue;
+            WQCacheItem *item = [WQCacheItem new];
+            WQScanDecode(item, encoded, @[@"name", @"bundleID", @"containerPath"], @[@"cacheBytes", @"tempBytes", @"cacheKnown", @"tempKnown", @"limited", @"crashLogs", @"containerIdentityKnown", @"containerDevice", @"containerInode", @"containerMode"]);
+            NSMutableArray *records = [NSMutableArray new], *targets = [NSMutableArray new];
+            for (id entry in [encoded[@"records"] isKindOfClass:NSArray.class] ? encoded[@"records"] : @[]) {
+                if (![entry isKindOfClass:NSDictionary.class] || ![entry[@"path"] isKindOfClass:NSString.class]) continue;
+                WQCacheTargetRecord *record = [WQCacheTargetRecord new];
+                WQScanDecode(record, entry, @[@"path", @"relativePath"], @[@"existed", @"identityKnown", @"device", @"inode", @"mode"]);
+                [records addObject:record]; [targets addObject:record.path];
+            }
+            item.targetRecords = records;
+            item.targets = targets;
+            // Historical results never restore a destructive selection implicitly.
+            item.selected = NO;
+            [rows addObject:item];
+        }
+        _items = rows;
+        _shownScanResult = result;
+        [self rebuildVisibleItems];
+    }
+    _scanning = _scanTask.running;
+    _status = _scanning ? (_scanTask.paused ? WQLocalized(@"Scan paused") :
+        (_scanTask.status.length ? WQLocalized(_scanTask.status) : WQLocalized(@"Scan queued; previous results kept"))) :
+        (_scanTask.status.length ? WQLocalized(_scanTask.status) : ([result[@"note"] isKindOfClass:NSString.class] ? result[@"note"] : nil));
+    if (_scanTask.finishedAt) {
+        NSString *date = [NSDateFormatter localizedStringFromDate:_scanTask.finishedAt dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterShortStyle];
+        self.navigationItem.prompt = WQLocalizedFormat(@"Last scanned %@ · Pull to refresh", date);
+    }
+    if (_scanTask.persistenceFailed) self.navigationItem.prompt = WQLocalized(@"Could not save scan state. Keep WQ Files open.");
+    if (!_scanning) [self.refreshControl endRefreshing];
+    [self.tableView reloadData];
+    [self updateButtons];
+    if (self.navigationController) wq_set_tab_busy(self.navigationController, WQLocalizedNullable(@"Clean"), !_scanTask.running ? WQTabBusyNone : wq_scan_task_waiting(_scanTask) ? WQTabBusyWaiting : WQTabBusyRunning);
+}
+
+- (void)toggleScan
+{
+    if (_scanTask.running) [_scanTask pause];
+    else { _resumeScan = YES; [self scan]; }
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
 
 - (void)viewDidLoad
 {
@@ -407,30 +480,32 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     self.definesPresentationContext = YES;
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
-    [self scan];
+    _scanTask = [WQScanTask taskNamed:@"clean"];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scanTaskChanged:) name:WQScanTaskChangedNotification object:_scanTask];
+    [self scanTaskChanged:nil];
+    if (!_scanTask.running && !_scanTask.userPaused && (!_scanTask.result || _scanTask.interrupted)) {
+        _resumeScan = _scanTask.interrupted;
+        [self scan];
+    }
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    if (_scanning && _scanCancellation.isCancelled) {
+    [self scanTaskChanged:nil];
+    // Sizes older than 10 minutes are measured again on their own (the old
+    // result stays visible meanwhile); pull to refresh any time.
+    NSDate *finished = _scanTask.finishedAt;
+    if (!_scanning && !_cleaning && !_scanTask.running && !_scanTask.userPaused && finished && -finished.timeIntervalSinceNow > 600.0)
         [self scan];
-        return;
-    }
-    // The screen is kept between visits: rescan on its own only when the
-    // list is old; pull to refresh rescans any time.
-    if (!_scanning && !_cleaning && _lastScanFinished > 0 &&
-        NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 600.0) {
-        [self scan];
-    }
 }
+
 
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
-    if (_scanning) [_scanCancellation cancel];
+    // Read-only scanning survives navigation; destructive cleaning still stops.
     if (_cleaning) [_cleanCancellation cancel];
-    [self.refreshControl endRefreshing];
 }
 
 - (NSArray<WQCacheItem *> *)visibleItems
@@ -468,6 +543,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 
 - (void)setStatus:(NSString *)status
 {
+    if (_scanning && !_cleaning) [_scanTask progress:status generation:_scanTask.generation];
     _status = status;
     [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
 }
@@ -481,8 +557,9 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         self.navigationItem.rightBarButtonItems = @[stop];
         return;
     }
-    if (_scanning) {
-        self.navigationItem.rightBarButtonItems = nil;
+    if (_scanning || _scanTask.userPaused) {
+        self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithTitle:WQLocalized(_scanning ? @"Pause Scan" : @"Resume Scan")
+            style:UIBarButtonItemStylePlain target:self action:@selector(toggleScan)]];
         return;
     }
     NSUInteger n = 0;
@@ -547,8 +624,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         [self.refreshControl endRefreshing];
         return;
     }
-    [_scanCancellation cancel];
     WQScanCancellation *cancellation = [WQScanCancellation new];
+    NSUInteger taskGeneration = [_scanTask beginFresh:!_resumeScan cancel:^{ [cancellation cancel]; }];
+    _resumeScan = NO;
+    if (!taskGeneration) return;
+    NSString *taskID = _scanTask.identifier;
     _scanCancellation = cancellation;
     NSUInteger generation = ++_scanGeneration;
     _scanning = YES;
@@ -558,8 +638,12 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     _cleanRequiresRescan = NO;
     _result = nil;
     [self updateButtons];
-    [self setStatus:WQLocalizedNullable(@"Finding apps…")];
-    dispatch_async(wq_io(), ^{
+    [self setStatus:WQLocalizedNullable(@"Scan queued; previous results kept")];
+    dispatch_async(wq_scan_queue(), ^{
+        if (cancellation.isCancelled) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self->_scanTask progress:WQLocalized(@"Finding apps…") generation:taskGeneration];
+        });
         NSMutableArray<WQCacheItem *> *items = [NSMutableArray new];
         NSMutableArray<NSString *> *emptyRoots = [NSMutableArray new];
         BOOL scanLimited = NO;
@@ -622,11 +706,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                 BOOL safeTmp = safeContainer &&
                     WQCacheSafetyTargetMatchesContainer(tmp, c, @"tmp");
                 WQCacheMeasurementState cacheState = granted && safeCaches
-                    ? WQCacheMeasureDirectory(caches, cancellation, &cacheBytes)
+                    ? WQCacheMeasureDirectory(caches, taskID, cancellation, &cacheBytes)
                     : WQCacheMeasurementLimited;
                 if (cacheState == WQCacheMeasurementCancelled) return;
                 WQCacheMeasurementState tempState = granted && safeTmp
-                    ? WQCacheMeasureDirectory(tmp, cancellation, &tempBytes)
+                    ? WQCacheMeasureDirectory(tmp, taskID, cancellation, &tempBytes)
                     : WQCacheMeasurementLimited;
                 if (tempState == WQCacheMeasurementCancelled) return;
                 if (!granted || !safeContainer) {
@@ -676,7 +760,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         BOOL crashReachable = wq_system_areas_reachable();
         BOOL safeCrashPath = crashReachable && WQCacheCrashPathIsSafe(kCrashLogsPath);
         WQCacheMeasurementState crashState = !crashReachable ? WQCacheMeasurementMissing
-            : safeCrashPath ? WQCacheMeasureDirectory(kCrashLogsPath, cancellation, &crash)
+            : safeCrashPath ? WQCacheMeasureDirectory(kCrashLogsPath, taskID, cancellation, &crash)
                             : WQCacheMeasurementLimited;
         if (crashState == WQCacheMeasurementCancelled) return;
         BOOL crashLimited = crashState == WQCacheMeasurementLimited;
@@ -747,15 +831,10 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                wq_size_text(foundBytes), crashLimited ? @", Crash Logs limited" : @"");
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-            self->_items = items;
-            [self rebuildVisibleItems];
-            self->_scanning = NO;
-            self->_scanLimited = scanLimited;
-            self->_status = note;
-            self->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
-            [self.refreshControl endRefreshing];
-            [self.tableView reloadData];
-            [self updateButtons];
+            NSMutableDictionary *snapshot = [[self snapshotRows:items note:note] mutableCopy];
+            snapshot[@"complete"] = @(failedEnumerations == 0);
+            [self->_scanTask finish:snapshot generation:taskGeneration];
+
         });
     });
 }

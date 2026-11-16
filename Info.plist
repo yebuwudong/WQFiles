@@ -50,19 +50,20 @@
 		<string>pl</string>
 		<string>tr</string>
 		<string>th</string>
+		<string>vi</string>
 	</array>
 	<key>CFBundleName</key>
 	<string>WQFiles</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.8</string>
+	<string>0.9.11</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>88</string>
+	<string>93</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

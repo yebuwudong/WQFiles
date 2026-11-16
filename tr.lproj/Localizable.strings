@@ -966,3 +966,16 @@
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "Erişim Önbelleğini Sıfırla: Klasörler boş kalıyorsa veya başlangıç denetimi sandbox erişiminin başarısız olduğunu söylüyorsa kullanın. WQ Files'ın App Group içindeki kendi önbellek klasörünü onarır; hiçbir şey silinmez.";
 "Access Cache Reset" = "Erişim Önbelleği Sıfırlandı";
 "The access cache was repaired. If folders still stay empty, send the Log." = "Erişim önbelleği onarıldı. Klasörler hâlâ boş kalıyorsa Günlüğü gönderin.";
+"Plain Background" = "Düz Arka Plan";
+"Plain Background: a plain black (or white) background instead of the colored one." = "Düz Arka Plan: renkli arka plan yerine düz siyah (veya beyaz) bir arka plan.";
+"No access" = "Erişim yok";
+"This item belongs to %@ (mode %o). WQ Files runs as mobile (uid %d) and can't open it; no app without root can." = "Bu öğe %@ kullanıcısına ait (mod %o). WQ Files mobile (uid %d) olarak çalışır ve bunu açamaz; root olmadan hiçbir uygulama açamaz.";
+"iOS %@ isn't supported" = "iOS %@ desteklenmiyor";
+"WQ Files needs iOS 26 or 27. The sandbox escape it uses only exists there, so on this version every folder stays closed.\n\nOn iOS 17 and 18, Cyanide can browse these folders." = "WQ Files için iOS 26 veya 27 gerekir. Kullandığı sandbox kaçışı yalnızca bu sürümlerde var; bu sürümde tüm klasörler kapalı kalır.\n\niOS 17 ve 18'de bu klasörlere Cyanide ile göz atabilirsiniz.";
+"Cyanide on GitHub" = "GitHub'da Cyanide";
+"Scan paused" = "Tarama duraklatıldı";
+"Scan queued; previous results kept" = "Tarama sıraya alındı; önceki sonuçlar korunuyor";
+"Last scanned %@ · Pull to refresh" = "Son tarama %@ · Yenilemek için çekin";
+"Pause Scan" = "Taramayı Duraklat";
+"Resume Scan" = "Taramaya Devam Et";
+"Could not save scan state. Keep WQ Files open." = "Tarama durumu kaydedilemedi. WQ Files'ı açık tutun.";

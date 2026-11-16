@@ -82,6 +82,11 @@ BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString *_Nullable *_Null
 // explanation for the user; nil if the owner and mode allow it.
 NSString *_Nullable wq_permission_hint(NSString *path, BOOL forWriting);
 
+// Whether the owner, group and mode of `st` let this app (uid, gid and its
+// supplementary groups) read the item; for folders, read and search. The
+// folder lists use it to dim what can't be opened (issue #57).
+BOOL wq_stat_readable(const struct stat *st);
+
 // Reads `length` bytes at `offset` (fewer at the end of the file).
 NSData *_Nullable wq_read_range(NSString *path, unsigned long long offset, NSUInteger length,
                                 NSString *_Nullable *_Nullable errorText);
@@ -243,6 +248,8 @@ void wq_full_scan_stop(void);
 BOOL wq_full_scan_was_declined(void);
 void wq_set_container_list_provider(NSArray<NSString *> *_Nullable (*_Nullable provider)(NSString *_Nullable storeHint));
 void wq_set_container_label_resolver(NSString *_Nullable (*_Nullable resolver)(NSString *path));
+// App Group folder -> group id, consulted after the metadata plist.
+void wq_set_group_label_resolver(NSString *_Nullable (*_Nullable resolver)(NSString *path));
 
 // Backups of overwritten or deleted files, mirrored by original path.
 NSString *wq_backup_root(void);
@@ -253,5 +260,19 @@ NSString *wq_app_backup_root(void);
 // turned into a different restore source.
 BOOL wq_is_backup_storage_path(NSString *path);
 NSString *_Nullable wq_backup_original_path(NSString *backupPath);
+
+
+
+// Durable directory-by-directory measurement for user-started scan tasks.
+// scope is stable (Apps/Clean); taskID changes only for an explicit fresh scan.
+// performIO serializes one directory with foreground mutations, yielding between
+// directories. Restored byte counts describe measurements taken over time.
+WQMeasureResult wq_measure_tree_resumable(NSString *dir, NSString *scope, NSString *taskID,
+    WQScanCancellation *_Nullable cancellation, unsigned long long *_Nullable bytes,
+    void (^performIO)(void (^work)(void)));
+
+// Cooperative suspension at scan boundaries; never waits on the mutation queue.
+void wq_scan_set_paused(BOOL paused);
+BOOL wq_scan_wait(WQScanCancellation *_Nullable cancellation);
 
 NS_ASSUME_NONNULL_END

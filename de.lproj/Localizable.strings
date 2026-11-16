@@ -962,3 +962,16 @@
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "Zugriffs-Cache zurücksetzen: Verwende es, wenn Ordner leer bleiben oder die Startprüfung meldet, dass der Sandbox-Zugriff fehlgeschlagen ist. Es repariert den eigenen Cache-Ordner von WQ Files in seiner App Group; es wird nichts gelöscht.";
 "Access Cache Reset" = "Zugriffs-Cache zurückgesetzt";
 "The access cache was repaired. If folders still stay empty, send the Log." = "Der Zugriffs-Cache wurde repariert. Wenn Ordner weiterhin leer bleiben, sende das Log.";
+"Plain Background" = "Schlichter Hintergrund";
+"Plain Background: a plain black (or white) background instead of the colored one." = "Schlichter Hintergrund: ein schlichter schwarzer (oder weißer) Hintergrund statt des farbigen.";
+"No access" = "Kein Zugriff";
+"This item belongs to %@ (mode %o). WQ Files runs as mobile (uid %d) and can't open it; no app without root can." = "Dieses Objekt gehört %@ (Modus %o). WQ Files läuft als mobile (uid %d) und kann es nicht öffnen; keine App ohne Root kann das.";
+"iOS %@ isn't supported" = "iOS %@ wird nicht unterstützt";
+"WQ Files needs iOS 26 or 27. The sandbox escape it uses only exists there, so on this version every folder stays closed.\n\nOn iOS 17 and 18, Cyanide can browse these folders." = "WQ Files braucht iOS 26 oder 27. Der Sandbox-Ausbruch, den es nutzt, gibt es nur dort, deshalb bleibt auf dieser Version jeder Ordner verschlossen.\n\nUnter iOS 17 und 18 kann Cyanide diese Ordner durchsuchen.";
+"Cyanide on GitHub" = "Cyanide auf GitHub";
+"Scan paused" = "Scan pausiert";
+"Scan queued; previous results kept" = "Scan eingereiht; vorherige Ergebnisse bleiben";
+"Last scanned %@ · Pull to refresh" = "Zuletzt gescannt %@ · Zum Aktualisieren ziehen";
+"Pause Scan" = "Scan pausieren";
+"Resume Scan" = "Scan fortsetzen";
+"Could not save scan state. Keep WQ Files open." = "Scan-Status konnte nicht gespeichert werden. Lass WQ Files geöffnet.";

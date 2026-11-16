@@ -170,6 +170,13 @@ int main(void)
                 close(fd3);
             }
             check(!WQAbsolutePathGrammar(@"/private/var/../file") && !WQAbsolutePathGrammar(@"/private//var/file"), @"grammar rejects traversal and ambiguous empty components");
+            NSData *(^utf8)(NSString *) = ^NSData *(NSString *t) { return [t dataUsingEncoding:NSUTF8StringEncoding]; };
+            check([WQIdentityAttributeIdentifier(utf8(@"v: 01\nschema: 002\nuuid: 39B822B6-0A32-42A7-ACD8-B1E23F6279A6\ninstance-uuid: none\nidentifier: group.com.apple.newsd\n")) isEqualToString:@"group.com.apple.newsd"],
+                  @"identity attribute gives its identifier line");
+            check(WQIdentityAttributeIdentifier(utf8(@"v: 01\nuuid: x\n")) == nil, @"identity attribute without identifier gives nothing");
+            check(WQIdentityAttributeIdentifier(utf8(@"identifier: a.b\nidentifier: c.d\n")) == nil, @"two identifier lines give nothing");
+            check(WQIdentityAttributeIdentifier(utf8(@"identifier: \n")) == nil, @"empty identifier gives nothing");
+            check(WQIdentityAttributeIdentifier(utf8(@"identifier: a b\n")) == nil, @"identifier with spaces gives nothing");
             close(fd);
         } @finally {
             [fm removeItemAtPath:base error:nil];

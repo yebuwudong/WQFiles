@@ -966,3 +966,16 @@
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "Resetuj pamięć dostępu: użyj, gdy foldery pozostają puste lub sprawdzenie przy starcie zgłasza, że dostęp do piaskownicy się nie powiódł. Naprawia własny folder pamięci podręcznej WQ Files w jego App Group; nic nie jest usuwane.";
 "Access Cache Reset" = "Pamięć dostępu zresetowana";
 "The access cache was repaired. If folders still stay empty, send the Log." = "Pamięć dostępu została naprawiona. Jeśli foldery nadal są puste, wyślij Log.";
+"Plain Background" = "Zwykłe tło";
+"Plain Background: a plain black (or white) background instead of the colored one." = "Zwykłe tło: jednolite czarne (lub białe) tło zamiast kolorowego.";
+"No access" = "Brak dostępu";
+"This item belongs to %@ (mode %o). WQ Files runs as mobile (uid %d) and can't open it; no app without root can." = "Ten element należy do %@ (tryb %o). WQ Files działa jako mobile (uid %d) i nie może go otworzyć; żadna aplikacja bez roota tego nie potrafi.";
+"iOS %@ isn't supported" = "iOS %@ nie jest obsługiwany";
+"WQ Files needs iOS 26 or 27. The sandbox escape it uses only exists there, so on this version every folder stays closed.\n\nOn iOS 17 and 18, Cyanide can browse these folders." = "WQ Files wymaga iOS 26 lub 27. Wyjście z piaskownicy, z którego korzysta, istnieje tylko tam, więc w tej wersji każdy folder pozostaje zamknięty.\n\nNa iOS 17 i 18 Cyanide może przeglądać te foldery.";
+"Cyanide on GitHub" = "Cyanide na GitHubie";
+"Scan paused" = "Skanowanie wstrzymane";
+"Scan queued; previous results kept" = "Skanowanie w kolejce; poprzednie wyniki zachowane";
+"Last scanned %@ · Pull to refresh" = "Ostatnie skanowanie %@ · Pociągnij, aby odświeżyć";
+"Pause Scan" = "Wstrzymaj skanowanie";
+"Resume Scan" = "Wznów skanowanie";
+"Could not save scan state. Keep WQ Files open." = "Nie można zapisać stanu skanowania. Nie zamykaj WQ Files.";

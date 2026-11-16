@@ -46,5 +46,32 @@ void wq_prism_install_background(UIViewController *vc);
 // Settings → New Design: WQ Prism (default) or the classic list design.
 BOOL wq_prism_enabled(void);
 void wq_set_prism_enabled(BOOL enabled);
+// Settings → Plain Background (issue #56): the WQ Prism screens on a plain
+// system background instead of the colored glows. Switching it updates every
+// backdrop at once.
+BOOL wq_prism_plain_background(void);
+void wq_set_prism_plain_background(BOOL plain);
+
+
+
+// Read-only scan orchestration runs separately from mutations. Directory-sized
+// measurement steps rejoin wq_io(), so foreground requests can run between them.
+// Registered at launch: scans pause when WQ Files goes to the background,
+// unless keepRunning() says a full scan still has background time.
+void wq_scan_lifecycle_install(BOOL (*_Nullable keepRunning)(void));
+void wq_scan_pause_for_background(void);
+dispatch_queue_t wq_scan_queue(void);
+void wq_scan_read(void (^work)(void));
+// Marks a tab while its scan runs or waits for another scan: a gray "…" or "◷"
+// badge on iPhone; on iPad the floating tab bar always draws badges red, so the
+// title gets an animated braille spinner (⠋⠙⠹…) or a clock (◷) instead.
+typedef NS_ENUM(NSInteger, WQTabBusy) { WQTabBusyNone, WQTabBusyRunning, WQTabBusyWaiting };
+@class WQScanTask;
+BOOL wq_scan_task_waiting(WQScanTask *task);
+// Section header with the status text and, while fraction >= 0, a progress bar.
+@interface WQProgressHeaderView : UITableViewHeaderFooterView
+- (void)setText:(nullable NSString *)text fraction:(float)fraction;
+@end
+void wq_set_tab_busy(UIViewController *tabRoot, NSString *title, WQTabBusy state);
 
 NS_ASSUME_NONNULL_END

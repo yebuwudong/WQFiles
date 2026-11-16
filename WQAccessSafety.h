@@ -420,4 +420,24 @@ static inline NSComparisonResult WQBackupStampCompare(NSString *a, NSString *b)
     }
     return NSOrderedSame;
 }
+// iOS 27.2 replaced the container's identifier attribute with
+// "com.apple.containermanager.identity", text lines such as
+// "v: 01", "schema: 002", "uuid: …", "identifier: group.com.apple.newsd".
+// Returns the identifier, or nil when the text has none or several.
+static inline NSString *WQIdentityAttributeIdentifier(NSData *value)
+{
+    if (value.length == 0 || value.length > 4096) return nil;
+    NSString *text = [[NSString alloc] initWithData:value encoding:NSUTF8StringEncoding];
+    if (!text) return nil;
+    NSString *found = nil;
+    for (NSString *raw in [text componentsSeparatedByString:@"\n"]) {
+        NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (![line hasPrefix:@"identifier:"]) continue;
+        NSString *ident = [[line substringFromIndex:11] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!ident.length || [ident rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) return nil;
+        if (found) return nil;
+        found = ident;
+    }
+    return found;
+}
 #endif

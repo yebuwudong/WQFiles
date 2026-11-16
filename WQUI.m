@@ -5,6 +5,7 @@
 //
 
 #import "WQUI.h"
+#import "WQScanTask.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import <fcntl.h>
@@ -278,10 +279,20 @@ UIImage *wq_app_icon(NSString *bundleID)
     // main thread. Lists warm the cache from their background passes; a
     // main-thread miss gets the tile without caching it.
     BOOL background = !NSThread.isMainThread;
-    UIImage *system = wq_real_icon(bundleID);
+    // App Group ids ("group.net.whatsapp.WhatsApp.shared") aren't bundles:
+    // look up the app id inside them (net.whatsapp.WhatsApp.shared, then its
+    // parents) instead of the group id and its "group.net…" parents.
+    NSString *appID = bundleID;
+    for (NSString *prefix in @[@"group.", @"systemgroup."]) {
+        if ([bundleID hasPrefix:prefix] && bundleID.length > prefix.length) {
+            appID = [bundleID substringFromIndex:prefix.length];
+            break;
+        }
+    }
+    UIImage *system = wq_real_icon(appID);
     if (system && background) wq_icon_note(bundleID, @"iOS returned an icon");
-    UIImage *raw = system ?: (background ? wq_bundle_icon(bundleID) : nil);
-    NSArray *parts = [bundleID componentsSeparatedByString:@"."];
+    UIImage *raw = system ?: (background ? wq_bundle_icon(appID) : nil);
+    NSArray *parts = [appID componentsSeparatedByString:@"."];
     for (NSInteger n = (NSInteger)parts.count - 1; !raw && n >= 3; n--)
     {
         NSString *parent = [[parts subarrayWithRange:NSMakeRange(0, (NSUInteger)n)] componentsJoinedByString:@"."];
@@ -298,6 +309,47 @@ dispatch_queue_t wq_io(void)
     static dispatch_once_t once;
     dispatch_once(&once, ^{ queue = dispatch_queue_create("wqfiles.io", DISPATCH_QUEUE_SERIAL); });
     return queue;
+}
+
+dispatch_queue_t wq_scan_queue(void)
+{
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("wqfiles.scans", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    });
+    return queue;
+}
+
+static BOOL (*gScanKeepsRunning)(void);
+
+void wq_scan_pause_for_background(void)
+{
+    wq_scan_set_paused(YES);
+    [WQScanTask setPaused:YES];
+}
+
+void wq_scan_lifecycle_install(BOOL (*keepRunning)(void))
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gScanKeepsRunning = keepRunning;
+        // Scans pause in the background, except while a full scan still has
+        // its background time; that time's expiry pauses them instead.
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *__unused note) {
+            if (gScanKeepsRunning && gScanKeepsRunning()) return;
+            wq_scan_pause_for_background();
+        }];
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *__unused note) {
+            wq_scan_set_paused(NO);
+            [WQScanTask setPaused:NO];
+        }];
+    });
+}
+
+void wq_scan_read(void (^work)(void))
+{
+    dispatch_sync(wq_io(), work);
 }
 
 static NSString *const kWQDeletingDisabledPref = @"WQDeletingDisabled";
@@ -398,6 +450,20 @@ NSString *wq_size_text(unsigned long long size)
     return [NSByteCountFormatter stringFromByteCount:(long long)size countStyle:NSByteCountFormatterCountStyleFile];
 }
 
+static NSString *const kWQPrismBackgroundChanged = @"WQPrismBackgroundChanged";
+static NSString *const kWQPlainBackgroundPref = @"WQPlainBackground";
+
+BOOL wq_prism_plain_background(void)
+{
+    return [NSUserDefaults.standardUserDefaults boolForKey:kWQPlainBackgroundPref];
+}
+
+void wq_set_prism_plain_background(BOOL plain)
+{
+    [NSUserDefaults.standardUserDefaults setBool:plain forKey:kWQPlainBackgroundPref];
+    [NSNotificationCenter.defaultCenter postNotificationName:kWQPrismBackgroundChanged object:nil];
+}
+
 // WQ Prism: a soft layered backdrop shared by the redesigned screens.
 @interface WQPrismBackgroundView : UIView
 @end
@@ -428,12 +494,22 @@ NSString *wq_size_text(unsigned long long size)
         _glows = glows;
         [self updateColors];
         [self registerForTraitChanges:@[UITraitUserInterfaceStyle.class] withAction:@selector(updateColors)];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateColors)
+                                                   name:kWQPrismBackgroundChanged object:nil];
     }
     return self;
 }
 
 - (void)updateColors
 {
+    BOOL plain = wq_prism_plain_background();
+    for (CAGradientLayer *g in _glows) g.hidden = plain;
+    if (plain) {
+        // Plain black (dark) or white (light), like the classic design.
+        UIColor *color = [UIColor.systemBackgroundColor resolvedColorWithTraitCollection:self.traitCollection];
+        _base.colors = @[(id)color.CGColor, (id)color.CGColor];
+        return;
+    }
     BOOL dark = self.traitCollection.userInterfaceStyle != UIUserInterfaceStyleLight;
     if (dark) {
         _base.colors = @[(id)[UIColor colorWithRed:0.024 green:0.033 blue:0.062 alpha:1].CGColor,
@@ -505,3 +581,105 @@ void wq_set_prism_enabled(BOOL enabled)
 {
     [NSUserDefaults.standardUserDefaults setBool:!enabled forKey:kWQClassicDesignPref];
 }
+
+// iPad: busy tab items with their plain titles; one timer animates them all
+// and stops when none is busy.
+static NSMapTable<UITabBarItem *, NSString *> *gBusyTabs;   // running → spinner
+static NSHashTable<UITabBarItem *> *gWaitingTabs;              // queued → clock
+static NSTimer *gBusyTabTimer;
+
+static void wq_busy_tabs_tick(void)
+{
+    static NSArray<NSString *> *frames;
+    static NSUInteger frame;
+    if (!frames) frames = @[@"⠋", @"⠙", @"⠹", @"⠸", @"⠼", @"⠴", @"⠦", @"⠧", @"⠇", @"⠏"];
+    frame = (frame + 1) % frames.count;
+    for (UITabBarItem *item in gBusyTabs)
+        if (![gWaitingTabs containsObject:item]) item.title = [NSString stringWithFormat:@"%@ %@", [gBusyTabs objectForKey:item], frames[frame]];
+}
+
+BOOL wq_scan_task_waiting(WQScanTask *task)
+{
+    // A started task publishes progress once its worker runs; until then it waits
+    // behind another scan on the shared queue (or is paused).
+    return task.running && (task.paused || !task.status.length
+        || [task.status isEqualToString:@"Scan queued; previous results kept"]
+        || [task.status isEqualToString:WQLocalized(@"Scan queued; previous results kept")]);
+}
+
+void wq_set_tab_busy(UIViewController *tabRoot, NSString *title, WQTabBusy state)
+{
+    UITabBarItem *item = tabRoot.tabBarItem;
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad) {
+        item.badgeColor = UIColor.systemGrayColor;  // busy, not a warning
+        item.badgeValue = state == WQTabBusyRunning ? @"…" : state == WQTabBusyWaiting ? @"◷" : nil;
+        return;
+    }
+    item.badgeValue = nil;
+    if (!gBusyTabs) {
+        gBusyTabs = [NSMapTable weakToStrongObjectsMapTable];
+        gWaitingTabs = [NSHashTable weakObjectsHashTable];
+    }
+    if (state == WQTabBusyWaiting) {
+        [gBusyTabs removeObjectForKey:item];
+        [gWaitingTabs addObject:item];
+        item.title = [title stringByAppendingString:@" ◷"];
+    } else if (state == WQTabBusyRunning) {
+        BOOL known = [gBusyTabs objectForKey:item] != nil;
+        [gWaitingTabs removeObject:item];
+        [gBusyTabs setObject:title forKey:item];
+        if (!known) wq_busy_tabs_tick();
+    } else {
+        [gWaitingTabs removeObject:item];
+        [gBusyTabs removeObjectForKey:item];
+        item.title = title;
+    }
+    if (gBusyTabs.count && !gBusyTabTimer) {
+        gBusyTabTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer * __unused t) { wq_busy_tabs_tick(); }];
+        [NSRunLoop.mainRunLoop addTimer:gBusyTabTimer forMode:NSRunLoopCommonModes];
+    } else if (!gBusyTabs.count && gBusyTabTimer) {
+        [gBusyTabTimer invalidate];
+        gBusyTabTimer = nil;
+    }
+}
+
+@implementation WQProgressHeaderView {
+    UILabel *_label;
+    UIProgressView *_bar;
+}
+
+- (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier
+{
+    if ((self = [super initWithReuseIdentifier:reuseIdentifier])) {
+        _label = [UILabel new];
+        _label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        _label.adjustsFontForContentSizeCategory = YES;
+        _label.textColor = UIColor.secondaryLabelColor;
+        _label.numberOfLines = 0;
+        _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+        UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[_label, _bar]];
+        stack.axis = UILayoutConstraintAxisVertical;
+        stack.spacing = 8;
+        stack.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:stack];
+        UILayoutGuide *m = self.contentView.layoutMarginsGuide;
+        NSLayoutConstraint *bottom = [stack.bottomAnchor constraintEqualToAnchor:m.bottomAnchor];
+        bottom.priority = UILayoutPriorityDefaultHigh;
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+            [stack.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+            [stack.topAnchor constraintEqualToAnchor:m.topAnchor],
+            bottom,
+        ]];
+    }
+    return self;
+}
+
+- (void)setText:(NSString *)text fraction:(float)fraction
+{
+    _label.text = text;
+    _bar.hidden = fraction < 0;
+    if (fraction >= 0) [_bar setProgress:MIN(1.0f, fraction) animated:NO];
+}
+
+@end

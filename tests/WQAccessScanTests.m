@@ -155,15 +155,66 @@ static void testLabelCacheIdentity(void)
     [NSFileManager.defaultManager removeItemAtPath:base error:nil];
 }
 
+static void testResumeWhileWorkerStops(void)
+{
+    wq_enumerate_invalidate();
+    __block _Atomic int calls = 0;
+    dispatch_semaphore_t entered = dispatch_semaphore_create(0), release = dispatch_semaphore_create(0);
+    wq_test_shared_scan_runner = ^NSDictionary *(BOOL __unused inodeOnly) {
+        int n = atomic_fetch_add(&calls, 1) + 1;
+        if (n == 1) {
+            dispatch_semaphore_signal(entered);
+            dispatch_semaphore_wait(release, DISPATCH_TIME_FOREVER);
+            return @{kRoot: @[@"stopping"]};
+        }
+        return @{kRoot: @[@"resumed"]};
+    };
+    WQScanCancellation *cancel = [WQScanCancellation new];
+    dispatch_semaphore_t left = dispatch_semaphore_create(0), resumed = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        (void)wq_shared_children(kRoot, kFsid, cancel, nil);
+        dispatch_semaphore_signal(left);
+    });
+    check(waitFor(entered, 5), @"worker started before pause");
+    [cancel cancel];
+    check(waitFor(left, 5), @"paused task releases its shared worker demand");
+    __block NSArray *result = nil;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        result = children(); dispatch_semaphore_signal(resumed);
+    });
+    usleep(300000);
+    check(atomic_load(&calls) == 1, @"replacement waits for old worker to checkpoint and exit");
+    dispatch_semaphore_signal(release);
+    check(waitFor(resumed, 5) && [result isEqual:@[@"resumed"]], @"rapid resume joins the replacement, never the stopping worker");
+    check([children() isEqual:@[@"resumed"]], @"stopping worker cannot republish stale results");
+    wq_test_shared_scan_runner = nil;
+}
+
+static void testSharedDemand(void)
+{
+    WQScanDemand *demand = [WQScanDemand new];
+    check([demand join] && [demand join], @"two tasks can share an index worker");
+    [demand leave];
+    check([demand wait:nil], @"pausing one task leaves the other task's worker running");
+    [demand leave];
+    check(![demand wait:nil], @"last waiter leaving stops the worker at its next checkpoint");
+    check(![demand join], @"rapid resume cannot join a worker already stopping");
+    WQScanDemand *abandoned = [WQScanDemand new];
+    [abandoned abandon];
+    check(![abandoned wait:nil], @"invalidated unused worker cannot hold the full-scan gate");
+}
+
 int main(void)
 {
     @autoreleasepool {
+        testSharedDemand();
         kRoot = wq_shared_scan_roots()[0];
         memset(&kFsid, 0, sizeof(kFsid));
         testInvalidationDuringBlockedWorker();
         testStaleWorkerDoesNotRepublish();
         testFullScanCoordinator();
         testLabelCacheIdentity();
+        testResumeWhileWorkerStops();
         printf("All WQAccess scan lifecycle tests passed.\n");
     }
     return 0;

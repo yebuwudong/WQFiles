@@ -32,6 +32,30 @@ if [ "$1" = "--sdk" ] && [ "$3" = "clang" ]; then
     chmod +x "$output"
     exit 0
 fi
+if [ "$1" = "actool" ]; then
+    compile=
+    partial=
+    previous=
+    for argument in "$@"; do
+        if [ "$previous" = "--compile" ]; then compile=$argument; fi
+        if [ "$previous" = "--output-partial-info-plist" ]; then partial=$argument; fi
+        previous=$argument
+    done
+    test -n "$compile" && test -n "$partial"
+    test -f "$2/AppIcon.appiconset/AppIcon1024-dark.png"
+    test -f "$2/AppIcon.appiconset/AppIcon1024-tinted.png"
+    printf 'fixture catalog\n' > "$compile/Assets.car"
+    printf 'fixture icon\n' > "$compile/AppIcon60x60@2x.png"
+    cat > "$partial" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict>
+<key>CFBundleIconFiles</key><array><string>AppIcon60x60</string></array>
+<key>CFBundleIconName</key><string>AppIcon</string></dict></dict>
+</dict></plist>
+PLIST
+    exit 0
+fi
 exit 2
 '''
 
@@ -111,7 +135,8 @@ class StagedBuildTests(unittest.TestCase):
             for name in ("build.sh", "Info.plist", "entitlements.plist"):
                 shutil.copy2(ROOT / name, project / name)
             (project / "icons").mkdir()
-            (project / "icons" / "AppIcon60x60@2x.png").write_bytes(b"fixture icon")
+            for name in ("AppIcon1024.png", "AppIcon1024-dark.png", "AppIcon1024-tinted.png"):
+                (project / "icons" / name).write_bytes(b"fixture icon")
             environment = self._fake_environment(root)
             environment.pop("WQFILES_FINAL_IPA", None)
             result = subprocess.run(
@@ -128,7 +153,8 @@ class StagedBuildTests(unittest.TestCase):
         for name in ("build.sh", "Info.plist", "entitlements.plist"):
             shutil.copy2(ROOT / name, project / name)
         (project / "icons").mkdir()
-        (project / "icons" / "AppIcon60x60@2x.png").write_bytes(b"fixture icon")
+        for name in ("AppIcon1024.png", "AppIcon1024-dark.png", "AppIcon1024-tinted.png"):
+            (project / "icons" / name).write_bytes(b"fixture icon")
         (project / "tests").mkdir()
         if runner is not None:
             path = project / "tests" / "run_all_tests.sh"
@@ -230,6 +256,10 @@ class StagedBuildTests(unittest.TestCase):
                 self.assertIsNone(archive.testzip())
                 self.assertIn("Payload/WQFiles.app/WQFiles", archive.namelist())
                 self.assertIn("Payload/WQFiles.app/Info.plist", archive.namelist())
+                self.assertIn("Payload/WQFiles.app/Assets.car", archive.namelist())
+                info = plistlib.loads(archive.read("Payload/WQFiles.app/Info.plist"))
+                self.assertEqual(info["CFBundleIcons"]["CFBundlePrimaryIcon"]["CFBundleIconName"], "AppIcon")
+                self.assertNotIn("CFBundleIcons~ipad", info)
 
     def test_zip_failure_preserves_existing_final_ipa_and_cleans_siblings(self):
         with tempfile.TemporaryDirectory() as directory:

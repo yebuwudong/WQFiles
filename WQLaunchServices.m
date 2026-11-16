@@ -1050,6 +1050,7 @@ static NSDictionary *gLSBundleName;
 static NSDictionary *gLSContainers;
 static NSDictionary *gLSBundlePaths;
 static NSArray<NSString *> *gLSAllPaths;   // containers and app groups, for the container scan
+static NSDictionary<NSString *, NSString *> *gLSGroupIDs;   // group folder -> group id
 static NSString *gLSStorePath;
 static NSDictionary *gLSStoreSignature;
 static BOOL gLSLoaded;
@@ -1064,6 +1065,7 @@ static void wq_ls_clear_snapshot_if_changed(BOOL changed)
     gLSContainers = nil;
     gLSBundlePaths = nil;
     gLSAllPaths = nil;
+    gLSGroupIDs = nil;
     gLSStorePath = nil;
     gLSStoreSignature = nil;
     gLSLoaded = NO;
@@ -1078,21 +1080,144 @@ static void wq_ls_note_failure(NSTimeInterval now, NSString *reason)
     if (reason) wq_log(@"names: %@; retrying in %.0f s", reason, delay);
 }
 
-// Every data container the store maps plus the group containers of the
-// installed apps (not mapped to an owner; the list only needs them).
-static NSArray<NSString *> *wq_ls_all_paths(NSData *data, NSDictionary *containers)
+static NSString *const kWQGroupRoot = @"/private/var/mobile/Containers/Shared/AppGroup/";
+
+static uint64_t wq_be(const uint8_t *p, NSUInteger n)
 {
-    NSMutableSet<NSString *> *all = [NSMutableSet setWithArray:containers.allKeys];
+    uint64_t v = 0;
+    for (NSUInteger i = 0; i < n; i++) v = v << 8 | p[i];
+    return v;
+}
+
+// Length of the binary plist starting at `start` (its trailer must end
+// exactly where the offset table says), or 0.
+static NSUInteger wq_bplist_length(const uint8_t *start, const uint8_t *end, NSUInteger minimum, NSUInteger limit)
+{
+    NSUInteger available = (NSUInteger)(end - start);
+    NSUInteger max = MIN(available, limit);
+    for (NSUInteger length = MAX(minimum, (NSUInteger)40); length <= max; length++) {
+        const uint8_t *t = start + length - 32;
+        if (t[0] | t[1] | t[2] | t[3] | t[4]) continue;
+        uint8_t offsetSize = t[6], refSize = t[7];
+        if (offsetSize < 1 || offsetSize > 8 || refSize < 1 || refSize > 8) continue;
+        uint64_t objects = wq_be(t + 8, 8), top = wq_be(t + 16, 8), table = wq_be(t + 24, 8);
+        if (objects == 0 || objects > 100000 || top >= objects || table < 8) continue;
+        if (table + objects * offsetSize + 32 != length) continue;
+        return length;
+    }
+    return 0;
+}
+
+static NSString *wq_group_key(NSString *path)
+{
+    if (![path isKindOfClass:NSString.class]) return nil;
+    NSString *p = path;
+    if ([p hasPrefix:@"/var/"]) p = [@"/private" stringByAppendingString:p];
+    while ([p hasSuffix:@"/"]) p = [p substringToIndex:p.length - 1];
+    if (![p hasPrefix:kWQGroupRoot]) return nil;
+    NSString *uuid = [p substringFromIndex:kWQGroupRoot.length];
+    if (uuid.length != 36 || ![[NSUUID alloc] initWithUUIDString:uuid]) return nil;
+    return [kWQGroupRoot stringByAppendingString:uuid.uppercaseString];
+}
+
+static BOOL wq_group_id_plausible(NSString *ident)
+{
+    if (![ident isKindOfClass:NSString.class] || ident.length < 3 || ident.length > 255) return NO;
+    if ([ident hasPrefix:@"."] || [ident hasSuffix:@"."] || [ident containsString:@"/"]) return NO;
+    return [ident containsString:@"."];
+}
+
+// Collects {id: group path} pairs anywhere in a parsed plist.
+static void wq_collect_group_pairs(id object, NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *byPath, NSUInteger depth)
+{
+    if (depth > 6) return;
+    if ([object isKindOfClass:NSDictionary.class]) {
+        [(NSDictionary *)object enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *__unused stop) {
+            NSString *path = wq_group_key(value);
+            if (path && wq_group_id_plausible(key)) {
+                NSMutableSet *ids = byPath[path] ?: (byPath[path] = [NSMutableSet new]);
+                [ids addObject:key];
+            } else {
+                wq_collect_group_pairs(value, byPath, depth + 1);
+            }
+        }];
+    } else if ([object isKindOfClass:NSArray.class]) {
+        for (id item in (NSArray *)object) wq_collect_group_pairs(item, byPath, depth + 1);
+    }
+}
+
+NSDictionary<NSString *, NSString *> *wq_ls_group_ids_from_store(NSData *data)
+{
     static const char needle[] = "/mobile/Containers/Shared/AppGroup/";
+    static const char magic[] = "bplist00";
     const uint8_t *bytes = data.bytes, *cursor = bytes, *end = bytes + data.length;
+    NSMutableIndexSet *parsed = [NSMutableIndexSet new];
+    NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *byPath = [NSMutableDictionary new];
     while (cursor < end) {
         const uint8_t *hit = memmem(cursor, (size_t)(end - cursor), needle, sizeof(needle) - 1);
         if (!hit) break;
         cursor = hit + sizeof(needle) - 1;
-        if ((size_t)(end - cursor) < 36) break;
-        NSString *uuid = [[NSString alloc] initWithBytes:cursor length:36 encoding:NSASCIIStringEncoding];
-        if (!uuid || ![[NSUUID alloc] initWithUUIDString:uuid]) continue;
-        [all addObject:[@"/private/var/mobile/Containers/Shared/AppGroup/" stringByAppendingString:uuid.uppercaseString]];
+        // The nearest plist header before the path (within 16 KB).
+        const uint8_t *from = hit - MIN((size_t)(hit - bytes), (size_t)16384), *start = NULL;
+        for (const uint8_t *p = hit - (sizeof(magic) - 1); p >= from; p--) {
+            if (memcmp(p, magic, sizeof(magic) - 1) == 0) { start = p; break; }
+            if (p == bytes) break;
+        }
+        if (!start) continue;
+        NSUInteger offset = (NSUInteger)(start - bytes);
+        if ([parsed containsIndex:offset]) continue;
+        [parsed addIndex:offset];
+        // A trailer-shaped run inside the plist can end it too early: then
+        // parsing fails and the next candidate length is tried.
+        NSUInteger minimum = (NSUInteger)(hit - start) + sizeof(needle);   // the path lies inside
+        for (int attempt = 0; attempt < 8; attempt++) {
+            NSUInteger length = wq_bplist_length(start, end, minimum, 65536);
+            if (!length) break;
+            NSData *slice = [NSData dataWithBytesNoCopy:(void *)start length:length freeWhenDone:NO];
+            id plist = [NSPropertyListSerialization propertyListWithData:slice options:0 format:NULL error:NULL];
+            if (plist) { wq_collect_group_pairs(plist, byPath, 0); break; }
+            minimum = length + 1;
+        }
+    }
+    NSMutableDictionary<NSString *, NSString *> *result = [NSMutableDictionary new];
+    for (NSString *path in byPath) if (byPath[path].count == 1) result[path] = byPath[path].anyObject;
+    return result;
+}
+
+// Every container path the store names: the data containers its records map
+// plus every other app, extension and group container path string in it.
+// Records whose container the parser can't pair with a bundle id (or that two
+// records claim) still name a real folder; leaving them out hid installed
+// apps (iOS 26.5: UC Browser missing from Apps). Those folders get their
+// label from the container itself (attributes, metadata plist).
+static NSArray<NSString *> *wq_ls_all_paths(NSData *data, NSDictionary *containers)
+{
+    NSMutableSet<NSString *> *all = [NSMutableSet setWithArray:containers.allKeys];
+    NSMutableSet<NSString *> *seen = [NSMutableSet new];   // case-insensitive: mapped keys keep the store's spelling
+    for (NSString *key in containers.allKeys) [seen addObject:key.uppercaseString];
+    static const char *const needles[] = {
+        "/mobile/Containers/Shared/AppGroup/",
+        "/mobile/Containers/Data/Application/",
+        "/mobile/Containers/Data/PluginKitPlugin/",
+    };
+    const uint8_t *bytes = data.bytes, *end = bytes + data.length;
+    for (size_t i = 0; i < sizeof(needles) / sizeof(needles[0]); i++) {
+        const char *needle = needles[i];
+        size_t needleLength = strlen(needle);
+        NSString *prefix = [@"/private/var" stringByAppendingString:@(needle)];
+        const uint8_t *cursor = bytes;
+        while (cursor < end) {
+            const uint8_t *hit = memmem(cursor, (size_t)(end - cursor), needle, needleLength);
+            if (!hit) break;
+            cursor = hit + needleLength;
+            if ((size_t)(end - cursor) < 36) break;
+            NSString *uuid = [[NSString alloc] initWithBytes:cursor length:36 encoding:NSASCIIStringEncoding];
+            if (!uuid || ![[NSUUID alloc] initWithUUIDString:uuid]) continue;
+            NSString *path = [prefix stringByAppendingString:uuid.uppercaseString];
+            if ([seen containsObject:path.uppercaseString]) continue;
+            [seen addObject:path.uppercaseString];
+            [all addObject:path];
+        }
     }
     return all.allObjects;
 }
@@ -1103,13 +1228,16 @@ static NSArray<NSString *> *wq_ls_all_paths(NSData *data, NSDictionary *containe
 // dictionaries are immutable copies, so readers see either the previous
 // snapshot or this one.
 static void wq_ls_publish_locked(NSString *path, const struct stat *st, NSDictionary *display, NSDictionary *bundleName,
-                                 NSDictionary *containers, NSDictionary *bundlePaths, NSArray<NSString *> *allPaths)
+                                 NSDictionary *containers, NSDictionary *bundlePaths, NSArray<NSString *> *allPaths,
+                                 NSDictionary<NSString *, NSString *> *groupIDs)
 {
     gLSDisplay = [display copy] ?: @{};
     gLSBundleName = [bundleName copy] ?: @{};
     gLSContainers = [containers copy] ?: @{};
     gLSBundlePaths = [bundlePaths copy] ?: @{};
     gLSAllPaths = [allPaths copy] ?: @[];
+    gLSGroupIDs = [groupIDs copy] ?: @{};
+    wq_log(@"names: %lu group folders identified from app records", (unsigned long)gLSGroupIDs.count);
     gLSStorePath = [path copy];
     gLSStoreSignature = [wq_ls_signature(st) copy];
     gLSLoaded = YES;
@@ -1192,7 +1320,8 @@ static void wq_load_ls_names_locked(void)
         wq_ls_note_failure(now, wq_ls_error(path, @"store rejected by bounded parser"));
         return;
     }
-    wq_ls_publish_locked(path, &before, display, bundleName, containers, bundlePaths, wq_ls_all_paths(data, containers));
+    wq_ls_publish_locked(path, &before, display, bundleName, containers, bundlePaths, wq_ls_all_paths(data, containers),
+                         wq_ls_group_ids_from_store(data));
 }
 
 // Apple's own apps and services: LaunchServices refuses this app on 27.x
@@ -1321,6 +1450,17 @@ NSString *wq_bundle_id_for_container(NSString *path)
     }
 }
 
+NSString *wq_group_id_for_container(NSString *path)
+{
+    NSString *key = wq_group_key(path);
+    if (!key) return nil;
+    @synchronized (wq_ls_lock()) {
+        wq_load_ls_names_locked();
+        NSString *ident = gLSGroupIDs[key];
+        return [ident isKindOfClass:NSString.class] ? ident : nil;
+    }
+}
+
 NSArray<NSString *> *wq_ls_bundle_containers(void)
 {
     @synchronized (wq_ls_lock()) {
@@ -1383,10 +1523,11 @@ NSArray<NSString *> *wq_ls_container_paths(NSString *storeHint)
     NSDictionary *display = nil, *bundleName = nil, *containers = nil, *bundlePaths = nil;
     if (!wq_parse_ls_store(data, &display, &bundleName, &containers, &bundlePaths) || containers.count < 2) return nil;
     NSArray<NSString *> *all = wq_ls_all_paths(data, containers);
+    NSDictionary<NSString *, NSString *> *groupIDs = wq_ls_group_ids_from_store(data);
     // A hint (a newer store found by the scan) or a changed remembered store
     // replaces the loaded names and maps too, not only the remembered path.
     @synchronized (wq_ls_lock()) {
-        wq_ls_publish_locked(path, &before, display, bundleName, containers, bundlePaths, all);
+        wq_ls_publish_locked(path, &before, display, bundleName, containers, bundlePaths, all, groupIDs);
     }
     return all;
 }

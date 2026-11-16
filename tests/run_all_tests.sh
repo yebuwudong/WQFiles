@@ -79,6 +79,8 @@ compile_run WQAccessTreeTests WQLocalization.m tests/WQAccessTreeTests.m WQCore.
 compile_run WQAccessMeasureTests WQLocalization.m tests/WQAccessMeasureTests.m WQCore.m
 compile_run WQAccessCopyTests WQLocalization.m tests/WQAccessCopyTests.m WQCore.m
 compile_run WQAccessScanTests WQLocalization.m tests/WQAccessScanTests.m WQCore.m
+compile_run WQScanRecoveryTests -DWQ_ACCESS_TESTING WQScanTask.m WQLocalization.m tests/WQScanRecoveryTests.m WQCore.m
+compile_run WQScanInodeCheckpointTests WQLocalization.m tests/WQScanInodeCheckpointTests.m WQCore.m
 compile_run WQAppsCopyTests WQLocalization.m tests/WQAppsCopyTests.m WQCore.m
 compile_run WQAppsSupportTests tests/WQAppsSupportTests.m
 compile_run WQCacheSafetyTests tests/WQCacheSafetyTests.m
@@ -114,7 +116,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     printf '\n== Strict iOS arm64 syntax/link checks ==\n'
     IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
     MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Info.plist)
-    SOURCES=(WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m main.m)
+    SOURCES=(WQCore.m WQAccess.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m main.m)
     FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -Wall -Wextra -Werror -O2)
     xcrun --sdk iphoneos clang -fsyntax-only "${FLAGS[@]}" "${SOURCES[@]}" > "$OUT/ios-syntax.log" 2>&1 || {
         cat "$OUT/ios-syntax.log" >&2

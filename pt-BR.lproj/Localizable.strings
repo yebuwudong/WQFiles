@@ -966,3 +966,16 @@
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "Redefinir cache de acesso: use quando as pastas continuarem vazias ou a verificação inicial disser que o acesso ao sandbox falhou. Ele repara a pasta de cache do próprio WQ Files no App Group; nada é apagado.";
 "Access Cache Reset" = "Cache de acesso redefinido";
 "The access cache was repaired. If folders still stay empty, send the Log." = "O cache de acesso foi reparado. Se as pastas continuarem vazias, envie o Log.";
+"Plain Background" = "Fundo simples";
+"Plain Background: a plain black (or white) background instead of the colored one." = "Fundo simples: um fundo preto (ou branco) liso em vez do colorido.";
+"No access" = "Sem acesso";
+"This item belongs to %@ (mode %o). WQ Files runs as mobile (uid %d) and can't open it; no app without root can." = "Este item pertence a %@ (modo %o). O WQ Files roda como mobile (uid %d) e não consegue abri-lo; nenhum app sem root consegue.";
+"iOS %@ isn't supported" = "O iOS %@ não é compatível";
+"WQ Files needs iOS 26 or 27. The sandbox escape it uses only exists there, so on this version every folder stays closed.\n\nOn iOS 17 and 18, Cyanide can browse these folders." = "O WQ Files precisa do iOS 26 ou 27. A saída do sandbox que ele usa só existe nessas versões, então nesta versão todas as pastas continuam fechadas.\n\nNo iOS 17 e 18, o Cyanide pode navegar por essas pastas.";
+"Cyanide on GitHub" = "Cyanide no GitHub";
+"Scan paused" = "Varredura pausada";
+"Scan queued; previous results kept" = "Varredura na fila; resultados anteriores mantidos";
+"Last scanned %@ · Pull to refresh" = "Última varredura %@ · Puxe para atualizar";
+"Pause Scan" = "Pausar varredura";
+"Resume Scan" = "Retomar varredura";
+"Could not save scan state. Keep WQ Files open." = "Não foi possível salvar o estado da varredura. Mantenha o WQ Files aberto.";
